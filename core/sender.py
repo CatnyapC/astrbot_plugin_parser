@@ -224,6 +224,13 @@ class MessageSender:
         if not force_merge or not segs:
             return segs
 
+        if not self._supports_forward_merge(segs):
+            seg_types = ", ".join(seg.__class__.__name__ for seg in segs)
+            logger.warning(
+                f"合并转发包含不支持的消息段，已回退为普通发送: segments=[{seg_types}]"
+            )
+            return segs
+
         nodes = Nodes([])
         self_id = event.get_self_id()
 
@@ -231,6 +238,10 @@ class MessageSender:
             nodes.nodes.append(Node(uin=self_id, name="解析器", content=[seg]))
 
         return [nodes]
+
+    @staticmethod
+    def _supports_forward_merge(segs: list[BaseMessageComponent]) -> bool:
+        return all(isinstance(seg, (Plain, Image)) for seg in segs)
 
     @staticmethod
     def _build_text_fallback(result: ParseResult) -> list[BaseMessageComponent]:
