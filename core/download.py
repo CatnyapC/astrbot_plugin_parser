@@ -80,6 +80,36 @@ class Downloader:
         """关闭网络客户端"""
         await self.client.close()
 
+    def _build_ytdlp_opts(
+        self,
+        *,
+        headers: dict[str, str] | None = None,
+        proxy: str | None = None,
+        cookiefile: Path | None = None,
+        format: str | None = None,
+        skip_download: bool = False,
+        quiet: bool = False,
+        no_warnings: bool = False,
+    ) -> dict[str, Any]:
+        opts: dict[str, Any] = {
+            "ignoreconfig": True,
+            "http_headers": headers or self.default_headers,
+            "js_runtimes": {"node": {}},
+        }
+        if skip_download:
+            opts["skip_download"] = True
+        if quiet:
+            opts["quiet"] = True
+        if no_warnings:
+            opts["no_warnings"] = True
+        if proxy:
+            opts["proxy"] = proxy
+        if cookiefile and cookiefile.is_file():
+            opts["cookiefile"] = str(cookiefile)
+        if format:
+            opts["format"] = format
+        return opts
+
     @auto_task
     async def streamd(
         self,
@@ -273,17 +303,14 @@ class Downloader:
     ) -> VideoInfo:
         if (info := self.info_cache.get(url)) is not None:
             return info
-        opts = {
-            "quiet": True,
-            "skip_download": True,
-            "http_headers": headers or self.default_headers,
-        }
-        if proxy:
-            opts["proxy"] = proxy
-        if cookiefile and cookiefile.is_file():
-            opts["cookiefile"] = str(cookiefile)
-        if format:
-            opts["format"] = format
+        opts = self._build_ytdlp_opts(
+            headers=headers,
+            proxy=proxy,
+            cookiefile=cookiefile,
+            format=format,
+            skip_download=True,
+            quiet=True,
+        )
         with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
             raw = await to_thread(ydl.extract_info, url, download=False)
             if not raw:
@@ -301,17 +328,14 @@ class Downloader:
         proxy: str | None = None,
         format: str | None = None,
     ) -> dict[str, Any]:
-        opts = {
-            "quiet": True,
-            "skip_download": True,
-            "http_headers": headers or self.default_headers,
-        }
-        if proxy:
-            opts["proxy"] = proxy
-        if cookiefile and cookiefile.is_file():
-            opts["cookiefile"] = str(cookiefile)
-        if format:
-            opts["format"] = format
+        opts = self._build_ytdlp_opts(
+            headers=headers,
+            proxy=proxy,
+            cookiefile=cookiefile,
+            format=format,
+            skip_download=True,
+            quiet=True,
+        )
 
         with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
             raw = await to_thread(ydl.extract_info, url, download=False)
@@ -340,21 +364,21 @@ class Downloader:
         if video_path.exists():
             return video_path
 
-        opts = {
+        opts = self._build_ytdlp_opts(
+            headers=headers,
+            proxy=proxy,
+            cookiefile=cookiefile,
+            format=format or "best",
+        )
+        opts.update({
             "outtmpl": str(video_path),
             "merge_output_format": "mp4",
             # "format": f"bv[filesize<={info.duration // 10 + 10}M]+ba/b[filesize<={info.duration // 8 + 10}M]",
             # "format": "bv*[height<=720]+ba/b[height<=720]",
-            "format": format or "best",
             "postprocessors": [
                 {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}
             ],
-            "http_headers": headers or self.default_headers,
-        }
-        if proxy:
-            opts["proxy"] = proxy
-        if cookiefile and cookiefile.is_file():
-            opts["cookiefile"] = str(cookiefile)
+        })
         if node:
             opts["js_runtimes"] = {"node": {}}
 
@@ -378,23 +402,21 @@ class Downloader:
         if video_path.exists():
             return video_path
 
-        opts = {
+        opts = self._build_ytdlp_opts(
+            headers=headers,
+            proxy=proxy,
+            cookiefile=cookiefile,
+            format=format,
+            quiet=True,
+            no_warnings=True,
+        )
+        opts.update({
             "outtmpl": str(self.cfg.cache_dir / file_stem) + ".%(ext)s",
             "merge_output_format": "mp4",
-            "format": format or None,
             "postprocessors": [
                 {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}
             ],
-            "http_headers": headers or self.default_headers,
-            "quiet": True,
-            "no_warnings": True,
-        }
-        if not opts["format"]:
-            opts.pop("format")
-        if proxy:
-            opts["proxy"] = proxy
-        if cookiefile and cookiefile.is_file():
-            opts["cookiefile"] = str(cookiefile)
+        })
         if node:
             opts["js_runtimes"] = {"node": {}}
 
@@ -423,9 +445,14 @@ class Downloader:
         if audio_path.exists():
             return audio_path
 
-        opts = {
+        opts = self._build_ytdlp_opts(
+            headers=headers,
+            proxy=proxy,
+            cookiefile=cookiefile,
+            format=format or "bestaudio/best",
+        )
+        opts.update({
             "outtmpl": str(self.cfg.cache_dir / file_name) + ".%(ext)s",
-            "format": format or "bestaudio/best",
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
@@ -433,13 +460,7 @@ class Downloader:
                     "preferredquality": "0",
                 }
             ],
-            "cookiefile": None,
-            "http_headers": headers or self.default_headers,
-        }
-        if proxy:
-            opts["proxy"] = proxy
-        if cookiefile and cookiefile.is_file():
-            opts["cookiefile"] = str(cookiefile)
+        })
 
         with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
             await to_thread(ydl.download, [url])

@@ -33,9 +33,15 @@ class YouTubeParser(BaseParser):
     async def _parse_video(self, searched: re.Match[str]):
         return await self.parse_video(searched)
 
+    @staticmethod
+    def _normalize_url(url: str) -> str:
+        if url.startswith(("http://", "https://")):
+            return url
+        return f"https://{url}"
+
     async def parse_video(self, searched: re.Match[str]):
         # 从匹配对象中获取原始URL
-        url = searched.group(0)
+        url = self._normalize_url(searched.group(0))
 
         video_info = await self.downloader.ytdlp_extract_info(
             url,
@@ -52,7 +58,7 @@ class YouTubeParser(BaseParser):
                 cookiefile=self.cookiejar.cookie_file,
                 headers=self.headers,
                 proxy=self.proxy,
-                format="bv*[height<=720]+ba/b[height<=720]",
+                format="best[height<=720]/bestvideo[height<=720]+bestaudio/best",
                 node=True,
             )
             contents.append(
@@ -78,7 +84,7 @@ class YouTubeParser(BaseParser):
     )
     async def ym(self, searched: re.Match[str]):
         """获取油管的音频(需加ym前缀)"""
-        url = searched.group("url")
+        url = self._normalize_url(searched.group("url"))
         video_info = await self.downloader.ytdlp_extract_info(
             url,
             cookiefile=self.cookiejar.cookie_file,
