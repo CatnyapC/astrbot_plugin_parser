@@ -264,12 +264,12 @@ class PluginConfig(ConfigNode):
             logger.error(f"[parser] 加载模板失败: {e}")
             return []
 
-    def add_blacklist(self, umo: str):
-        if umo not in self.blacklist:
-            self.blacklist.append(umo)
+    def add_blacklist(self, user_id: str):
+        if user_id not in self.blacklist:
+            self.blacklist.append(user_id)
             self.save_config()
 
-    def remove_blacklist(self, umo: str):
-        if umo in self.blacklist:
-            self.blacklist.remove(umo)
+    def remove_blacklist(self, user_id: str):
+        if user_id in self.blacklist:
+            self.blacklist.remove(user_id)
             self.save_config()

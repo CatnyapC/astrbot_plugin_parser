@@ -111,17 +111,22 @@ class ParserPlugin(Star):
                 return parser
         raise ValueError(f"未找到类型为 {parser_type} 的 parser 实例")
 
+    @staticmethod
+    def _get_filter_user_id(event: AstrMessageEvent) -> str:
+        return str(event.get_sender_id())
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
         """消息的统一入口"""
         umo = event.unified_msg_origin
+        user_id = self._get_filter_user_id(event)
 
         # 白名单
-        if self.cfg.whitelist and umo not in self.cfg.whitelist:
+        if self.cfg.whitelist and user_id not in self.cfg.whitelist:
             return
 
         # 黑名单
-        if self.cfg.blacklist and umo in self.cfg.blacklist:
+        if self.cfg.blacklist and user_id in self.cfg.blacklist:
             return
 
         # 消息链
@@ -199,18 +204,18 @@ class ParserPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("开启解析")
     async def open_parser(self, event: AstrMessageEvent):
-        """开启当前会话的解析"""
-        umo = event.unified_msg_origin
-        self.cfg.remove_blacklist(umo)
-        yield event.plain_result("当前会话的解析已开启")
+        """开启当前用户的解析"""
+        user_id = self._get_filter_user_id(event)
+        self.cfg.remove_blacklist(user_id)
+        yield event.plain_result("当前用户的解析已开启")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("关闭解析")
     async def close_parser(self, event: AstrMessageEvent):
-        """关闭当前会话的解析"""
-        umo = event.unified_msg_origin
-        self.cfg.add_blacklist(umo)
-        yield event.plain_result("当前会话的解析已关闭")
+        """关闭当前用户的解析"""
+        user_id = self._get_filter_user_id(event)
+        self.cfg.add_blacklist(user_id)
+        yield event.plain_result("当前用户的解析已关闭")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("登录B站", alias={"blogin", "登录b站"})
