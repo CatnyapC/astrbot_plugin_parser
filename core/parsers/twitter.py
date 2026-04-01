@@ -43,7 +43,11 @@ class TwitterParser(BaseParser):
                 raise ClientError(f"xdown API {resp.status} {resp.reason}")
             return await resp.json()
 
-    @handle("x.com", r"https?://x.com/[0-9-a-zA-Z_]{1,20}/status/([0-9]+)")
+    @handle(
+        "twitter.com",
+        r"https?://(?:www\.)?twitter.com/[0-9-a-zA-Z_]{1,20}/status/([0-9]+)",
+    )
+    @handle("x.com", r"https?://(?:www\.)?x.com/[0-9-a-zA-Z_]{1,20}/status/([0-9]+)")
     async def _parse(self, searched: re.Match[str]) -> ParseResult:
         # 从匹配对象中获取原始URL
         url = searched.group(0)

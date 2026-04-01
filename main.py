@@ -119,14 +119,11 @@ class ParserPlugin(Star):
     async def on_message(self, event: AstrMessageEvent):
         """消息的统一入口"""
         umo = event.unified_msg_origin
+        group_id = event.get_group_id()
         user_id = self._get_filter_user_id(event)
 
-        # 白名单
-        if self.cfg.whitelist and user_id not in self.cfg.whitelist:
-            return
-
-        # 黑名单
-        if self.cfg.blacklist and user_id in self.cfg.blacklist:
+        # 分群白名单：当前群未配置该用户时跳过解析
+        if not self.cfg.is_whitelist_allowed(group_id, user_id):
             return
 
         # 消息链
@@ -200,22 +197,6 @@ class ParserPlugin(Star):
 
         # 发送
         await self.sender.send_parse_result(event, parse_res)
-
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("开启解析")
-    async def open_parser(self, event: AstrMessageEvent):
-        """开启当前用户的解析"""
-        user_id = self._get_filter_user_id(event)
-        self.cfg.remove_blacklist(user_id)
-        yield event.plain_result("当前用户的解析已开启")
-
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("关闭解析")
-    async def close_parser(self, event: AstrMessageEvent):
-        """关闭当前用户的解析"""
-        user_id = self._get_filter_user_id(event)
-        self.cfg.add_blacklist(user_id)
-        yield event.plain_result("当前用户的解析已关闭")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("登录B站", alias={"blogin", "登录b站"})

@@ -190,8 +190,7 @@ class ParserConfig(ConfigNodeContainer):
 
 
 class PluginConfig(ConfigNode):
-    whitelist: list[str]
-    blacklist: list[str]
+    whitelist: str
 
     arbiter: bool
     debounce_interval: int
@@ -229,6 +228,7 @@ class PluginConfig(ConfigNode):
         self.proxy = self.proxy or None
         self.max_duration = self.source_max_minute * 60
         self.max_size = self.source_max_size * 1024 * 1024
+        self.group_user_whitelist = self._cfg_group_user_whitelist(self.whitelist)
 
         tz = context.get_config().get("timezone")
         self.timezone = (
@@ -264,12 +264,59 @@ class PluginConfig(ConfigNode):
             logger.error(f"[parser] 加载模板失败: {e}")
             return []
 
-    def add_blacklist(self, user_id: str):
-        if user_id not in self.blacklist:
-            self.blacklist.append(user_id)
-            self.save_config()
+    @staticmethod
+    def _cfg_group_user_whitelist(value: Any) -> dict[str, set[str]]:
+        raw = value
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return {}
+            try:
+                raw = json.loads(text)
+            except Exception:
+                logger.warning("[parser] whitelist JSON 解析失败，已回退为空")
+                return {}
 
-    def remove_blacklist(self, user_id: str):
-        if user_id in self.blacklist:
-            self.blacklist.remove(user_id)
-            self.save_config()
+        # 兼容旧版 list[str] 全局白名单；升级后建议改成按 group_id 配置。
+        if isinstance(raw, list):
+            normalized = PluginConfig._normalize_whitelist_users(raw)
+            return {"*": normalized} if normalized else {}
+
+        if not isinstance(raw, dict):
+            return {}
+
+        result: dict[str, set[str]] = {}
+        for group_id, users in raw.items():
+            gid = str(group_id or "").strip()
+            if not gid:
+                continue
+            normalized = PluginConfig._normalize_whitelist_users(users)
+            if normalized:
+                result[gid] = normalized
+        return result
+
+    @staticmethod
+    def _normalize_whitelist_users(users: Any) -> set[str]:
+        if isinstance(users, str):
+            users = [users]
+        if not isinstance(users, list):
+            return set()
+        return {str(user_id).strip() for user_id in users if str(user_id).strip()}
+
+    def is_whitelist_allowed(self, group_id: str, user_id: str) -> bool:
+        if not self.group_user_whitelist:
+            return True
+
+        gid = str(group_id or "").strip()
+        uid = str(user_id or "").strip()
+        if not uid:
+            return False
+        if not gid:
+            return True
+
+        allowed_users = self.group_user_whitelist.get(gid)
+        if allowed_users is None:
+            allowed_users = self.group_user_whitelist.get("*")
+        if allowed_users is None:
+            return False
+        return uid in allowed_users
