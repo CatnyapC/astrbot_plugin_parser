@@ -122,10 +122,6 @@ class ParserPlugin(Star):
         group_id = event.get_group_id()
         user_id = self._get_filter_user_id(event)
 
-        # 分群白名单：当前群未配置该用户时跳过解析
-        if not self.cfg.is_whitelist_allowed(group_id, user_id):
-            return
-
         # 消息链
         chain = event.get_messages()
         if not chain:
@@ -161,6 +157,11 @@ class ParserPlugin(Star):
             return
         logger.debug(f"匹配结果: {keyword}, {searched}")
 
+        parser = self.parser_map[keyword]
+        if self.cfg.should_apply_whitelist(parser.platform.name):
+            if not self.cfg.is_whitelist_allowed(group_id, user_id):
+                return
+
         # 仲裁机制
         if isinstance(event, AiocqhttpMessageEvent) and not event.is_private_chat():
             raw = event.message_obj.raw_message
@@ -187,7 +188,7 @@ class ParserPlugin(Star):
             return
 
         # 解析
-        parse_res = await self.parser_map[keyword].parse(keyword, searched)
+        parse_res = await parser.parse(keyword, searched)
 
         # 基于资源ID防抖
         resource_id = parse_res.get_resource_id()

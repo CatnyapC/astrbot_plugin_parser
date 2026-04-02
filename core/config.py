@@ -272,7 +272,7 @@ class PluginConfig(ConfigNode):
             if not text:
                 return {}
             try:
-                raw = json.loads(text)
+                raw = PluginConfig._loads_json_with_comments(text)
             except Exception:
                 logger.warning("[parser] whitelist JSON 解析失败，已回退为空")
                 return {}
@@ -302,6 +302,83 @@ class PluginConfig(ConfigNode):
         if not isinstance(users, list):
             return set()
         return {str(user_id).strip() for user_id in users if str(user_id).strip()}
+
+    @staticmethod
+    def _loads_json_with_comments(text: str) -> Any:
+        return json.loads(PluginConfig._strip_json_comments(text))
+
+    @staticmethod
+    def _strip_json_comments(text: str) -> str:
+        chars: list[str] = []
+        in_string = False
+        string_quote = ""
+        escaped = False
+        in_line_comment = False
+        in_block_comment = False
+        i = 0
+
+        while i < len(text):
+            ch = text[i]
+            next_ch = text[i + 1] if i + 1 < len(text) else ""
+
+            if in_line_comment:
+                if ch == "\n":
+                    in_line_comment = False
+                    chars.append(ch)
+                i += 1
+                continue
+
+            if in_block_comment:
+                if ch == "*" and next_ch == "/":
+                    in_block_comment = False
+                    i += 2
+                    continue
+                if ch == "\n":
+                    chars.append(ch)
+                i += 1
+                continue
+
+            if in_string:
+                chars.append(ch)
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == string_quote:
+                    in_string = False
+                i += 1
+                continue
+
+            if ch in ('"', "'"):
+                in_string = True
+                string_quote = ch
+                chars.append(ch)
+                i += 1
+                continue
+
+            if ch == "/" and next_ch == "/":
+                in_line_comment = True
+                i += 2
+                continue
+
+            if ch == "/" and next_ch == "*":
+                in_block_comment = True
+                i += 2
+                continue
+
+            if ch == "#":
+                in_line_comment = True
+                i += 1
+                continue
+
+            chars.append(ch)
+            i += 1
+
+        return "".join(chars)
+
+    @staticmethod
+    def should_apply_whitelist(platform_name: str) -> bool:
+        return platform_name in {"youtube", "twitter"}
 
     def is_whitelist_allowed(self, group_id: str, user_id: str) -> bool:
         if not self.group_user_whitelist:
