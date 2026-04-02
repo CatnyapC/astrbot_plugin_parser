@@ -201,6 +201,7 @@ class PluginConfig(ConfigNode):
     audio_to_file: bool
     single_heavy_render_card: bool
     forward_threshold: int
+    merge_sender_name: str | None
 
     show_download_fail_tip: bool
     download_timeout: int

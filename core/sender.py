@@ -226,9 +226,10 @@ class MessageSender:
 
         nodes = Nodes([])
         self_id = event.get_self_id()
+        sender_name = getattr(self.cfg, "merge_sender_name", None) or "狐米"
 
         for seg in segs:
-            nodes.nodes.append(Node(uin=self_id, name="解析器", content=[seg]))
+            nodes.nodes.append(Node(uin=self_id, name=sender_name, content=[seg]))
 
         return [nodes]
 

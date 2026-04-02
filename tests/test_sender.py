@@ -29,6 +29,7 @@ def test_merge_segments_wraps_plain_and_image_into_nodes():
     assert len(merged) == 1
     assert isinstance(merged[0], Nodes)
     assert len(merged[0].nodes) == 2
+    assert all(node.name == "狐米" for node in merged[0].nodes)
 
 
 def test_merge_segments_wraps_video_into_nodes_too():
@@ -41,3 +42,20 @@ def test_merge_segments_wraps_video_into_nodes_too():
     assert len(merged) == 1
     assert isinstance(merged[0], Nodes)
     assert len(merged[0].nodes) == 2
+
+
+def test_merge_segments_uses_configured_sender_name():
+    sender = MessageSender(
+        config=SimpleNamespace(merge_sender_name="自定义名字"),
+        renderer=SimpleNamespace(),
+    )
+
+    merged = sender._merge_segments_if_needed(
+        DummyEvent(),
+        [Plain("hello")],
+        force_merge=True,
+    )
+
+    assert len(merged) == 1
+    assert isinstance(merged[0], Nodes)
+    assert merged[0].nodes[0].name == "自定义名字"
