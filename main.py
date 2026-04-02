@@ -37,7 +37,7 @@ class ParserPlugin(Star):
         # 仲裁器
         self.arbiter = EmojiLikeArbiter()
         # 消息发送器
-        self.sender = MessageSender(self.cfg, self.renderer)
+        self.sender = MessageSender(self.cfg, self.renderer, context=context)
         # 缓存清理器
         self.cleaner = CacheCleaner(self.cfg)
         # 关键词 -> Parser 映射

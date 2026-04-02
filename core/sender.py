@@ -50,16 +50,14 @@ class MessageSender:
     - 只负责“怎么发”
     """
 
-    def __init__(self, config: PluginConfig, renderer: Renderer):
+    def __init__(self, config: PluginConfig, renderer: Renderer, context=None):
         self.cfg = config
         self.renderer = renderer
+        self.context = context
 
     def _to_file_uri(self, path: Path) -> str:
         if not path.is_absolute():
             path = path.resolve()
-        posix_path = path.as_posix()
-        if posix_path.startswith("/"):
-            return f"file:////{posix_path.lstrip('/')}"
         return path.as_uri()
 
     @staticmethod
@@ -115,6 +113,46 @@ class MessageSender:
             "force_merge": force_merge,
         }
 
+    def _resolve_thread_archive_writer(self):
+        if self.context is None or not callable(
+            getattr(self.context, "get_registered_star", None)
+        ):
+            return None
+        try:
+            meta = self.context.get_registered_star("astrbot_plugin_thread_archive")
+        except Exception:
+            meta = None
+        star = getattr(meta, "star_cls", None) if meta is not None else None
+        if star is None or not callable(getattr(star, "archive_sent_chain", None)):
+            return None
+        return star
+
+    async def _archive_sent_chain(
+        self,
+        event: AstrMessageEvent,
+        chain: list[BaseMessageComponent],
+        *,
+        source: str,
+        raw_json_extra: dict | None = None,
+    ) -> None:
+        archive = self._resolve_thread_archive_writer()
+        if archive is None or not chain:
+            return
+        try:
+            await archive.archive_sent_chain(
+                event=event,
+                chain=list(chain),
+                source="after_message_sent",
+                raw_json_extra={
+                    "origin_source": source,
+                    **(raw_json_extra or {}),
+                },
+                include_current_event_raw_id=True,
+                use_current_event_raw_id_as_message_raw_id=False,
+            )
+        except Exception as exc:
+            logger.warning(f"parser archive_sent_chain failed: {exc}")
+
     async def _send_preview_card(
         self,
         event: AstrMessageEvent,
@@ -133,7 +171,13 @@ class MessageSender:
             return
 
         if image_path := await self.renderer.render_card(result):
-            await event.send(event.chain_result([Image(self._to_file_uri(image_path))]))
+            chain = [Image(self._to_file_uri(image_path))]
+            await event.send(event.chain_result(chain))
+            await self._archive_sent_chain(
+                event,
+                chain,
+                source="parser_preview_card",
+            )
 
     async def _build_segments(
         self,
@@ -273,6 +317,12 @@ class MessageSender:
 
         try:
             await event.send(event.chain_result(segs))
+            await self._archive_sent_chain(
+                event,
+                segs,
+                source="parser_send_group",
+                raw_json_extra={"force_merge": bool(plan["force_merge"])},
+            )
             return True
         except Exception as e:
             seg_meta = self._collect_seg_meta(segs)
@@ -324,6 +374,11 @@ class MessageSender:
 
             try:
                 await event.send(event.chain_result(segs))
+                await self._archive_sent_chain(
+                    event,
+                    segs,
+                    source="parser_send_fallback",
+                )
             except Exception as e:
                 seg_meta = self._collect_seg_meta(segs)
                 logger.error(f"发送解析结果失败： error={e}, segments={seg_meta}")
