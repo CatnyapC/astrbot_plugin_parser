@@ -58,6 +58,10 @@ class MessageSender:
     def _to_file_uri(self, path: Path) -> str:
         if not path.is_absolute():
             path = path.resolve()
+        posix_path = path.as_posix()
+        if posix_path.startswith("/"):
+            # AstrBot currently strips `file:///` via url[8:], so keep one extra slash.
+            return f"file:////{posix_path.lstrip('/')}"
         return path.as_uri()
 
     @staticmethod

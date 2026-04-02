@@ -160,12 +160,13 @@ def test_send_preview_card_archives_sent_chain(tmp_path):
     assert isinstance(archive.calls[0]["chain"][0], Image)
 
 
-def test_to_file_uri_uses_standard_file_scheme(tmp_path):
+def test_to_file_uri_survives_astrbot_file_trim(tmp_path):
     sender = build_sender()
     image_path = tmp_path / "card.png"
     image_path.write_bytes(b"fake-card")
 
     uri = sender._to_file_uri(image_path)
 
-    assert uri == image_path.as_uri()
-    assert uri.startswith("file:///")
+    assert uri == f"file:////{image_path.as_posix().lstrip('/')}"
+    assert uri.startswith("file:////")
+    assert uri[8:] == image_path.as_posix()
