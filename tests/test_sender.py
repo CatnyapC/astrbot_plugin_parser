@@ -7,6 +7,8 @@ from astrbot.core.message.components import Image, Nodes, Plain, Video
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from core.data import Author, ParseResult, Platform
+from core.debounce import Debouncer
 from core.sender import MessageSender
 
 
@@ -126,6 +128,115 @@ def test_send_group_archives_sent_chain():
     assert isinstance(archive.calls[0]["chain"][0], Nodes)
 
 
+def test_send_parse_result_returns_false_when_send_fails():
+    sender = build_sender()
+    event = DummyEvent()
+
+    async def fake_send(_chain):
+        raise RuntimeError("send failed")
+
+    event.send = fake_send
+    sender._resolve_groups = lambda _result: []
+    result = ParseResult(
+        platform=Platform(name="twitter", display_name="推特"),
+        text="正文",
+    )
+
+    ok = __import__("asyncio").run(sender.send_parse_result(event, result))
+
+    assert ok is False
+    assert event.sent == []
+
+
+def test_send_group_retries_with_normalized_image_after_send_failure():
+    sender = build_sender()
+    original = Image("file:////tmp/original.jpg")
+    retried = Image("file:////tmp/retried.jpg")
+    attempts: list[MessageChain] = []
+
+    async def fake_send(chain):
+        attempts.append(chain)
+        if len(attempts) == 1:
+            raise RuntimeError("send failed")
+
+    async def fake_build_segments(_result, _plan):
+        return [original]
+
+    async def fake_normalize(_segs):
+        return [retried]
+
+    event = DummyEvent()
+    event.send = fake_send
+    sender._build_send_plan = lambda *_args, **_kwargs: {
+        "preview_card": False,
+        "force_merge": False,
+    }
+    sender._build_segments = fake_build_segments
+    sender._normalize_image_segments_for_retry = fake_normalize
+    group = SimpleNamespace(contents=[], force_merge=None, render_card=None)
+
+    ok = __import__("asyncio").run(sender._send_group(event, object(), group))
+
+    assert ok is True
+    assert len(attempts) == 2
+    assert attempts[0].chain[0] is original
+    assert attempts[1].chain[0] is retried
+
+
+def test_send_group_retries_with_perturbed_png_after_second_failure():
+    sender = build_sender()
+    original = Image("file:////tmp/original.jpg")
+    retried = Image("file:////tmp/retried.jpg")
+    perturbed = Image("file:////tmp/perturbed.png")
+    attempts: list[MessageChain] = []
+
+    async def fake_send(chain):
+        attempts.append(chain)
+        if len(attempts) < 3:
+            raise RuntimeError("send failed")
+
+    async def fake_build_segments(_result, _plan):
+        return [original]
+
+    async def fake_normalize(_segs):
+        return [retried]
+
+    async def fake_perturb(_segs):
+        return [perturbed]
+
+    event = DummyEvent()
+    event.send = fake_send
+    sender._build_send_plan = lambda *_args, **_kwargs: {
+        "preview_card": False,
+        "force_merge": False,
+    }
+    sender._build_segments = fake_build_segments
+    sender._normalize_image_segments_for_retry = fake_normalize
+    sender._perturb_image_segments_for_retry = fake_perturb
+    group = SimpleNamespace(contents=[], force_merge=None, render_card=None)
+
+    ok = __import__("asyncio").run(sender._send_group(event, object(), group))
+
+    assert ok is True
+    assert len(attempts) == 3
+    assert attempts[0].chain[0] is original
+    assert attempts[1].chain[0] is retried
+    assert attempts[2].chain[0] is perturbed
+
+
+def test_resource_debounce_marks_only_after_success():
+    debouncer = Debouncer(SimpleNamespace(debounce_interval=60))
+    session = "group:123"
+    resource_id = "abc123"
+
+    assert debouncer.check_resource(session, resource_id) is False
+    assert debouncer.check_resource(session, resource_id) is False
+
+    debouncer.mark_resource(session, resource_id)
+
+    assert debouncer.check_resource(session, resource_id) is True
+
+
 def test_send_preview_card_archives_sent_chain(tmp_path):
     archive = DummyArchive()
     context = SimpleNamespace(
@@ -160,6 +271,29 @@ def test_send_preview_card_archives_sent_chain(tmp_path):
     assert isinstance(archive.calls[0]["chain"][0], Image)
 
 
+def test_build_text_fallback_skips_header_only_result():
+    result = ParseResult(
+        platform=Platform(name="twitter", display_name="推特"),
+        author=Author(name="无用户名"),
+    )
+
+    assert MessageSender._build_text_fallback(result) == []
+
+
+def test_build_text_fallback_keeps_header_when_text_present():
+    result = ParseResult(
+        platform=Platform(name="twitter", display_name="推特"),
+        author=Author(name="alice"),
+        text="正文",
+    )
+
+    segs = MessageSender._build_text_fallback(result)
+
+    assert len(segs) == 1
+    assert isinstance(segs[0], Plain)
+    assert segs[0].text == "推特 @alice\n正文"
+
+
 def test_to_file_uri_survives_astrbot_file_trim(tmp_path):
     sender = build_sender()
     image_path = tmp_path / "card.png"
@@ -170,3 +304,37 @@ def test_to_file_uri_survives_astrbot_file_trim(tmp_path):
     assert uri == f"file:////{image_path.as_posix().lstrip('/')}"
     assert uri.startswith("file:////")
     assert uri[8:] == image_path.as_posix()
+
+
+def test_to_file_uri_resolves_absolute_symlink(tmp_path):
+    sender = build_sender()
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    linked_dir = tmp_path / "linked"
+    linked_dir.symlink_to(real_dir, target_is_directory=True)
+    image_path = real_dir / "card.png"
+    image_path.write_bytes(b"fake-card")
+
+    uri = sender._to_file_uri(linked_dir / "card.png")
+
+    assert uri == f"file:////{image_path.as_posix().lstrip('/')}"
+    assert uri[8:] == image_path.as_posix()
+
+
+def test_perturb_image_for_retry_produces_distinct_outputs(tmp_path):
+    sender = build_sender()
+    image_path = tmp_path / "card.png"
+    image_path.write_bytes(
+        bytes.fromhex(
+            "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753"
+            "de0000000c49444154789c63f8ffff3f0005fe02fea757a90000000049454e44ae426082"
+        )
+    )
+
+    first = __import__("asyncio").run(sender._perturb_image_for_retry(image_path))
+    second = __import__("asyncio").run(sender._perturb_image_for_retry(image_path))
+
+    assert first is not None
+    assert second is not None
+    assert first != second
+    assert first.read_bytes() != second.read_bytes()

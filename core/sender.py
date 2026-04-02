@@ -1,5 +1,8 @@
+import asyncio
 from itertools import chain
 from pathlib import Path
+from random import SystemRandom
+from uuid import uuid4
 
 from astrbot.api import logger
 from astrbot.core.message.components import (
@@ -13,6 +16,7 @@ from astrbot.core.message.components import (
     Video,
 )
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
+from PIL import Image as PILImage, ImageEnhance, ImageOps
 
 from .config import PluginConfig
 from .data import (
@@ -54,10 +58,10 @@ class MessageSender:
         self.cfg = config
         self.renderer = renderer
         self.context = context
+        self._rand = SystemRandom()
 
     def _to_file_uri(self, path: Path) -> str:
-        if not path.is_absolute():
-            path = path.resolve()
+        path = path.resolve()
         posix_path = path.as_posix()
         if posix_path.startswith("/"):
             # AstrBot currently strips `file:///` via url[8:], so keep one extra slash.
@@ -156,6 +160,153 @@ class MessageSender:
             )
         except Exception as exc:
             logger.warning(f"parser archive_sent_chain failed: {exc}")
+
+    @staticmethod
+    def _file_uri_to_path(uri: str) -> Path | None:
+        if uri.startswith("file:////"):
+            return Path("/" + uri.removeprefix("file:////"))
+        if uri.startswith("file:///"):
+            return Path("/" + uri.removeprefix("file:///"))
+        return None
+
+    async def _normalize_image_for_retry(self, path: Path) -> Path | None:
+        src = path.resolve()
+        if not src.is_file():
+            return None
+
+        def _rewrite() -> Path:
+            dst = src.with_name(f"{src.stem}_qqsafe_{uuid4().hex[:8]}.jpg")
+            with PILImage.open(src) as img:
+                img = ImageOps.exif_transpose(img)
+                if img.mode in ("RGBA", "LA") or (
+                    img.mode == "P" and "transparency" in img.info
+                ):
+                    rgba = img.convert("RGBA")
+                    rgb = PILImage.new("RGB", rgba.size, (255, 255, 255))
+                    rgb.paste(rgba, mask=rgba.getchannel("A"))
+                else:
+                    rgb = img.convert("RGB")
+                rgb.save(dst, format="JPEG", quality=95, progressive=False)
+            return dst
+
+        try:
+            return await asyncio.to_thread(_rewrite)
+        except Exception as exc:
+            logger.warning(f"parser normalize image for retry failed: path={src} err={exc}")
+            return None
+
+    async def _perturb_image_for_retry(self, path: Path) -> Path | None:
+        src = path.resolve()
+        if not src.is_file():
+            return None
+
+        def _rewrite() -> Path:
+            dst = src.with_name(f"{src.stem}_qqsafe_{uuid4().hex[:8]}.png")
+            with PILImage.open(src) as img:
+                img = ImageOps.exif_transpose(img).convert("RGB")
+                width, height = img.size
+                scale = self._rand.uniform(0.94, 1.08)
+                resized = img.resize(
+                    (
+                        max(64, int(width * scale)),
+                        max(64, int(height * scale)),
+                    ),
+                    resample=PILImage.Resampling.LANCZOS,
+                )
+                angle = self._rand.uniform(-2.2, 2.2)
+                rotated = resized.rotate(
+                    angle,
+                    resample=PILImage.Resampling.BICUBIC,
+                    expand=True,
+                    fillcolor=(
+                        self._rand.randint(232, 255),
+                        self._rand.randint(232, 255),
+                        self._rand.randint(232, 255),
+                    ),
+                )
+                bright = ImageEnhance.Brightness(rotated).enhance(
+                    self._rand.uniform(0.92, 1.08)
+                )
+                contrast = ImageEnhance.Contrast(bright).enhance(
+                    self._rand.uniform(0.9, 1.12)
+                )
+                colorized = ImageEnhance.Color(contrast).enhance(
+                    self._rand.uniform(0.88, 1.18)
+                )
+                border = (
+                    self._rand.randint(8, 28),
+                    self._rand.randint(8, 28),
+                    self._rand.randint(8, 28),
+                    self._rand.randint(8, 28),
+                )
+                fill = (
+                    self._rand.randint(228, 255),
+                    self._rand.randint(228, 255),
+                    self._rand.randint(228, 255),
+                )
+                img = ImageOps.expand(colorized, border=border, fill=fill)
+                img.save(dst, format="PNG")
+            return dst
+
+        try:
+            return await asyncio.to_thread(_rewrite)
+        except Exception as exc:
+            logger.warning(f"parser perturb image for retry failed: path={src} err={exc}")
+            return None
+
+    async def _normalize_image_segments_for_retry(
+        self, segs: list[BaseMessageComponent]
+    ) -> list[BaseMessageComponent] | None:
+        normalized: list[BaseMessageComponent] = []
+        changed = False
+
+        for seg in segs:
+            if not isinstance(seg, Image):
+                normalized.append(seg)
+                continue
+            file_uri = str(getattr(seg, "file", "") or "")
+            if not file_uri:
+                normalized.append(seg)
+                continue
+            local_path = self._file_uri_to_path(file_uri)
+            if local_path is None:
+                normalized.append(seg)
+                continue
+            retry_path = await self._normalize_image_for_retry(local_path)
+            if retry_path is None:
+                normalized.append(seg)
+                continue
+            normalized.append(Image(self._to_file_uri(retry_path)))
+            changed = True
+
+        return normalized if changed else None
+
+    async def _perturb_image_segments_for_retry(
+        self, segs: list[BaseMessageComponent]
+    ) -> list[BaseMessageComponent] | None:
+        normalized: list[BaseMessageComponent] = []
+        changed = False
+
+        for seg in segs:
+            if not isinstance(seg, Image):
+                normalized.append(seg)
+                continue
+            file_uri = str(getattr(seg, "file", "") or "")
+            if not file_uri:
+                normalized.append(seg)
+                continue
+            local_path = self._file_uri_to_path(file_uri)
+            if local_path is None:
+                normalized.append(seg)
+                continue
+            retry_path = await self._perturb_image_for_retry(local_path)
+            if retry_path is None:
+                normalized.append(seg)
+                continue
+            normalized.append(Image(self._to_file_uri(retry_path)))
+            changed = True
+
+        return normalized if changed else None
 
     async def _send_preview_card(
         self,
@@ -283,13 +434,19 @@ class MessageSender:
 
     @staticmethod
     def _build_text_fallback(result: ParseResult) -> list[BaseMessageComponent]:
+        body_lines: list[str] = []
+        if result.text:
+            body_lines.append(result.text)
+        elif result.extra.get("info"):
+            body_lines.append(str(result.extra["info"]))
+
+        if not body_lines:
+            return []
+
         lines: list[str] = []
         if result.header:
             lines.append(result.header)
-        if result.text:
-            lines.append(result.text)
-        elif result.extra.get("info"):
-            lines.append(str(result.extra["info"]))
+        lines.extend(body_lines)
 
         text = "\n".join(line for line in lines if line).strip()
         return [Plain(text)] if text else []
@@ -329,6 +486,46 @@ class MessageSender:
             )
             return True
         except Exception as e:
+            retry_segs = await self._normalize_image_segments_for_retry(segs)
+            if retry_segs is not None:
+                try:
+                    logger.warning(
+                        f"发送图片失败，使用重编码图片重试: segments={self._collect_seg_meta(retry_segs)}"
+                    )
+                    await event.send(event.chain_result(retry_segs))
+                    await self._archive_sent_chain(
+                        event,
+                        retry_segs,
+                        source="parser_send_group",
+                        raw_json_extra={
+                            "force_merge": bool(plan["force_merge"]),
+                            "image_retry": "normalized_reencode",
+                        },
+                    )
+                    return True
+                except Exception as retry_exc:
+                    e = retry_exc
+                    segs = retry_segs
+            retry_segs = await self._perturb_image_segments_for_retry(segs)
+            if retry_segs is not None:
+                try:
+                    logger.warning(
+                        f"发送图片二次失败，使用扰动 PNG 重试: segments={self._collect_seg_meta(retry_segs)}"
+                    )
+                    await event.send(event.chain_result(retry_segs))
+                    await self._archive_sent_chain(
+                        event,
+                        retry_segs,
+                        source="parser_send_group",
+                        raw_json_extra={
+                            "force_merge": bool(plan["force_merge"]),
+                            "image_retry": "perturbed_png",
+                        },
+                    )
+                    return True
+                except Exception as retry_exc:
+                    e = retry_exc
+                    segs = retry_segs
             seg_meta = self._collect_seg_meta(segs)
             logger.error(f"发送解析结果失败： error={e}, segments={seg_meta}")
             return False
@@ -353,7 +550,7 @@ class MessageSender:
         self,
         event: AstrMessageEvent,
         result: ParseResult,
-    ):
+    ) -> bool:
         """
         发送解析结果的统一入口
 
@@ -374,7 +571,7 @@ class MessageSender:
             segs = self._build_text_fallback(result)
             if not segs:
                 logger.warning("发送结果为空，不执行发送")
-                return
+                return False
 
             try:
                 await event.send(event.chain_result(segs))
@@ -383,7 +580,10 @@ class MessageSender:
                     segs,
                     source="parser_send_fallback",
                 )
+                return True
             except Exception as e:
                 seg_meta = self._collect_seg_meta(segs)
                 logger.error(f"发送解析结果失败： error={e}, segments={seg_meta}")
-            return
+                return False
+
+        return True

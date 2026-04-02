@@ -192,12 +192,13 @@ class ParserPlugin(Star):
 
         # 基于资源ID防抖
         resource_id = parse_res.get_resource_id()
-        if self.debouncer.hit_resource(umo, resource_id):
+        if self.debouncer.check_resource(umo, resource_id):
             logger.warning(f"[资源防抖] 资源 {resource_id} 在防抖时间内，跳过发送")
             return
 
         # 发送
-        await self.sender.send_parse_result(event, parse_res)
+        if await self.sender.send_parse_result(event, parse_res):
+            self.debouncer.mark_resource(umo, resource_id)
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("登录B站", alias={"blogin", "登录b站"})
