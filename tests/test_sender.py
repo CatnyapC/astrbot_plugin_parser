@@ -148,6 +148,46 @@ def test_send_parse_result_returns_false_when_send_fails():
     assert event.sent == []
 
 
+def test_send_chain_retries_once_after_timeout():
+    sender = build_sender()
+    event = DummyEvent()
+    attempts = 0
+
+    sender._send_timeout_seconds = lambda: 0.01
+
+    async def fake_send(_chain):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            await __import__("asyncio").sleep(0.02)
+
+    event.send = fake_send
+
+    __import__("asyncio").run(sender._send_chain(event, [Plain("hello")]))
+
+    assert attempts == 2
+
+
+def test_send_parse_result_skips_text_fallback_after_group_failure():
+    sender = build_sender()
+    event = DummyEvent()
+    sender._resolve_groups = lambda _result: [object()]
+
+    async def fake_send_group(_event, _result, _group):
+        return False
+
+    sender._send_group = fake_send_group
+    result = ParseResult(
+        platform=Platform(name="twitter", display_name="推特"),
+        text="正文",
+    )
+
+    ok = __import__("asyncio").run(sender.send_parse_result(event, result))
+
+    assert ok is False
+    assert event.sent == []
+
+
 def test_send_group_retries_with_normalized_image_after_send_failure():
     sender = build_sender()
     original = Image("file:////tmp/original.jpg")

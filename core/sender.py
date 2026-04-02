@@ -38,6 +38,10 @@ from .exception import (
 )
 from .render import Renderer
 
+SEND_TIMEOUT_SECONDS = 300.0
+SEND_RETRY_TIMEOUT_SECONDS = 600.0
+SEND_TIMEOUT_RETRIES = 1
+
 
 class MessageSender:
     """
@@ -67,6 +71,58 @@ class MessageSender:
             # AstrBot currently strips `file:///` via url[8:], so keep one extra slash.
             return f"file:////{posix_path.lstrip('/')}"
         return path.as_uri()
+
+    def _send_timeout_seconds(self) -> float:
+        value = getattr(self.cfg, "send_timeout_seconds", SEND_TIMEOUT_SECONDS)
+        try:
+            timeout = float(value)
+        except (TypeError, ValueError):
+            timeout = SEND_TIMEOUT_SECONDS
+        return timeout if timeout > 0 else SEND_TIMEOUT_SECONDS
+
+    def _send_retry_timeout_seconds(self) -> float:
+        value = getattr(
+            self.cfg,
+            "send_retry_timeout_seconds",
+            SEND_RETRY_TIMEOUT_SECONDS,
+        )
+        try:
+            timeout = float(value)
+        except (TypeError, ValueError):
+            timeout = SEND_RETRY_TIMEOUT_SECONDS
+        return timeout if timeout > 0 else SEND_RETRY_TIMEOUT_SECONDS
+
+    @staticmethod
+    def _send_timeout_retries() -> int:
+        return SEND_TIMEOUT_RETRIES
+
+    async def _send_chain(self, event: AstrMessageEvent, chain: list[BaseMessageComponent]):
+        max_attempts = 1 + self._send_timeout_retries()
+        seg_meta = self._collect_seg_meta(chain)
+
+        for attempt in range(1, max_attempts + 1):
+            timeout_seconds = (
+                self._send_timeout_seconds()
+                if attempt == 1
+                else self._send_retry_timeout_seconds()
+            )
+            try:
+                await asyncio.wait_for(
+                    event.send(event.chain_result(chain)),
+                    timeout=timeout_seconds,
+                )
+                return
+            except asyncio.TimeoutError as exc:
+                if attempt < max_attempts:
+                    logger.warning(
+                        "发送解析结果超时，准备重试: "
+                        f"attempt={attempt}/{max_attempts}, "
+                        f"timeout={timeout_seconds}s, segments={seg_meta}"
+                    )
+                    continue
+                raise TimeoutError(
+                    f"send timeout after {timeout_seconds}s (attempt {attempt}/{max_attempts})"
+                ) from exc
 
     @staticmethod
     def _iter_contents(result: ParseResult):
@@ -327,12 +383,18 @@ class MessageSender:
 
         if image_path := await self.renderer.render_card(result):
             chain = [Image(self._to_file_uri(image_path))]
-            await event.send(event.chain_result(chain))
-            await self._archive_sent_chain(
-                event,
-                chain,
-                source="parser_preview_card",
-            )
+            try:
+                await self._send_chain(event, chain)
+                await self._archive_sent_chain(
+                    event,
+                    chain,
+                    source="parser_preview_card",
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"发送预览卡片失败，跳过预览继续发送正文: error={exc}, "
+                    f"segments={self._collect_seg_meta(chain)}"
+                )
 
     async def _build_segments(
         self,
@@ -477,7 +539,7 @@ class MessageSender:
             return False
 
         try:
-            await event.send(event.chain_result(segs))
+            await self._send_chain(event, segs)
             await self._archive_sent_chain(
                 event,
                 segs,
@@ -486,13 +548,17 @@ class MessageSender:
             )
             return True
         except Exception as e:
+            if isinstance(e, TimeoutError):
+                seg_meta = self._collect_seg_meta(segs)
+                logger.error(f"发送解析结果失败： error={e}, segments={seg_meta}")
+                return False
             retry_segs = await self._normalize_image_segments_for_retry(segs)
             if retry_segs is not None:
                 try:
                     logger.warning(
                         f"发送图片失败，使用重编码图片重试: segments={self._collect_seg_meta(retry_segs)}"
                     )
-                    await event.send(event.chain_result(retry_segs))
+                    await self._send_chain(event, retry_segs)
                     await self._archive_sent_chain(
                         event,
                         retry_segs,
@@ -512,7 +578,7 @@ class MessageSender:
                     logger.warning(
                         f"发送图片二次失败，使用扰动 PNG 重试: segments={self._collect_seg_meta(retry_segs)}"
                     )
-                    await event.send(event.chain_result(retry_segs))
+                    await self._send_chain(event, retry_segs)
                     await self._archive_sent_chain(
                         event,
                         retry_segs,
@@ -568,22 +634,7 @@ class MessageSender:
             sent = await self._send_group(event, result, group) or sent
 
         if not sent:
-            segs = self._build_text_fallback(result)
-            if not segs:
-                logger.warning("发送结果为空，不执行发送")
-                return False
-
-            try:
-                await event.send(event.chain_result(segs))
-                await self._archive_sent_chain(
-                    event,
-                    segs,
-                    source="parser_send_fallback",
-                )
-                return True
-            except Exception as e:
-                seg_meta = self._collect_seg_meta(segs)
-                logger.error(f"发送解析结果失败： error={e}, segments={seg_meta}")
-                return False
+            logger.warning("发送解析结果失败，已放弃发送，不再执行纯文本兜底")
+            return False
 
         return True
