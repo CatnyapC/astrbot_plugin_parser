@@ -6,6 +6,8 @@ from astrbot.core.message.components import (
     BaseMessageComponent,
     File,
     Image,
+    Node,
+    Nodes,
     Plain,
     Record,
     Video,
@@ -206,34 +208,29 @@ class MessageSender:
 
         return segs
 
-    @staticmethod
-    def _is_media_segment(seg: BaseMessageComponent) -> bool:
-        return isinstance(seg, (Image, Record, Video, File))
-
-    def _split_segments_for_send(
+    def _merge_segments_if_needed(
         self,
+        event: AstrMessageEvent,
         segs: list[BaseMessageComponent],
-    ) -> list[list[BaseMessageComponent]]:
-        media_count = sum(1 for seg in segs if self._is_media_segment(seg))
-        if media_count <= 1:
-            return [segs] if segs else []
+        force_merge: bool,
+    ) -> list[BaseMessageComponent]:
+        """
+        根据策略决定是否将消息段合并为转发节点
 
-        batches: list[list[BaseMessageComponent]] = []
-        text_batch: list[BaseMessageComponent] = []
+        合并后的消息结构：
+        - 每个原始消息段成为一个 Node
+        - 统一使用机器人自身身份
+        """
+        if not force_merge or not segs:
+            return segs
+
+        nodes = Nodes([])
+        self_id = event.get_self_id()
 
         for seg in segs:
-            if self._is_media_segment(seg):
-                if text_batch:
-                    batches.append(text_batch)
-                    text_batch = []
-                batches.append([seg])
-                continue
-            text_batch.append(seg)
+            nodes.nodes.append(Node(uin=self_id, name="解析器", content=[seg]))
 
-        if text_batch:
-            batches.append(text_batch)
-
-        return batches
+        return [nodes]
 
     @staticmethod
     def _build_text_fallback(result: ParseResult) -> list[BaseMessageComponent]:
@@ -269,19 +266,17 @@ class MessageSender:
         await self._send_preview_card(event, result, plan)
 
         segs = await self._build_segments(result, plan)
+        segs = self._merge_segments_if_needed(event, segs, plan["force_merge"])
         if not segs:
             return False
 
-        sent = False
-        batches = self._split_segments_for_send(segs)
-        for batch in batches:
-            try:
-                await event.send(event.chain_result(batch))
-                sent = True
-            except Exception as e:
-                seg_meta = self._collect_seg_meta(batch)
-                logger.error(f"发送解析结果失败： error={e}, segments={seg_meta}")
-        return sent
+        try:
+            await event.send(event.chain_result(segs))
+            return True
+        except Exception as e:
+            seg_meta = self._collect_seg_meta(segs)
+            logger.error(f"发送解析结果失败： error={e}, segments={seg_meta}")
+            return False
 
     @staticmethod
     def _collect_seg_meta(segs: list[BaseMessageComponent]) -> list[dict[str, str]]:

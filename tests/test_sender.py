@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from astrbot.core.message.components import Image, Plain, Video
+from astrbot.core.message.components import Image, Nodes, Plain, Video
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -19,29 +19,25 @@ def build_sender() -> MessageSender:
     return MessageSender(config=SimpleNamespace(), renderer=SimpleNamespace())
 
 
-def test_split_segments_for_send_splits_multiple_media():
+def test_merge_segments_wraps_plain_and_image_into_nodes():
     sender = build_sender()
 
-    segs = [
-        Plain("hello"),
-        Image("file:///tmp/test-1.png"),
-        Image("file:///tmp/test-2.png"),
-    ]
+    segs = [Plain("hello"), Image("file:///tmp/test.png")]
 
-    batches = sender._split_segments_for_send(segs)
+    merged = sender._merge_segments_if_needed(DummyEvent(), segs, force_merge=True)
 
-    assert batches == [
-        [Plain("hello")],
-        [Image("file:///tmp/test-1.png")],
-        [Image("file:///tmp/test-2.png")],
-    ]
+    assert len(merged) == 1
+    assert isinstance(merged[0], Nodes)
+    assert len(merged[0].nodes) == 2
 
 
-def test_split_segments_for_send_keeps_single_media_together():
+def test_merge_segments_wraps_video_into_nodes_too():
     sender = build_sender()
 
     segs = [Plain("hello"), Video("file:///tmp/test.mp4")]
 
-    batches = sender._split_segments_for_send(segs)
+    merged = sender._merge_segments_if_needed(DummyEvent(), segs, force_merge=True)
 
-    assert batches == [segs]
+    assert len(merged) == 1
+    assert isinstance(merged[0], Nodes)
+    assert len(merged[0].nodes) == 2
