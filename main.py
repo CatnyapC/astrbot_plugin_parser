@@ -115,9 +115,17 @@ class ParserPlugin(Star):
     def _get_filter_user_id(event: AstrMessageEvent) -> str:
         return str(event.get_sender_id())
 
+    @staticmethod
+    def _should_skip_router_requeue(event: AstrMessageEvent) -> bool:
+        return bool(event.get_extra("_router_timeout_requeue", False))
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
         """消息的统一入口"""
+        if self._should_skip_router_requeue(event):
+            logger.debug("[parser] skip router timeout requeue event")
+            return
+
         umo = event.unified_msg_origin
         group_id = event.get_group_id()
         user_id = self._get_filter_user_id(event)
