@@ -421,7 +421,8 @@ class Renderer:
 
     async def render_card(self, result: ParseResult) -> Path | None:
         """渲染卡片并落盘，失败返回 None"""
-        cache = self.cfg.cache_dir / f"card_{uuid.uuid4().hex}.png"
+        cache_dir = self.cfg.ensure_dir(self.cfg.cache_dir)
+        cache = cache_dir / f"card_{uuid.uuid4().hex}.png"
         try:
             img = await self._create_card_image(result)
             buf = BytesIO()

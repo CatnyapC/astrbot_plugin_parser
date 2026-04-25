@@ -216,6 +216,12 @@ class PluginConfig(ConfigNode):
 
     _plugin_name = "astrbot_plugin_parser"
 
+    @staticmethod
+    def ensure_dir(path: Path) -> Path:
+        real_path = path.resolve(strict=False) if path.is_symlink() else path
+        real_path.mkdir(parents=True, exist_ok=True)
+        return real_path
+
     def __init__(self, config: AstrBotConfig, context: Context):
         super().__init__(config)
         self.context = context
@@ -240,9 +246,9 @@ class PluginConfig(ConfigNode):
         self.data_dir = StarTools.get_data_dir(self._plugin_name)
         self.plugin_dir = Path(get_astrbot_plugin_path()) / self._plugin_name
         self.cache_dir = self.data_dir / "cache"
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.ensure_dir(self.cache_dir)
         self.cookie_dir = self.data_dir / "cookies"
-        self.cookie_dir.mkdir(parents=True, exist_ok=True)
+        self.ensure_dir(self.cookie_dir)
         self.default_template_file = self.plugin_dir / "default_template.json"
 
         # ---------- Parser ----------

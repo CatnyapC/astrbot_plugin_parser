@@ -41,8 +41,9 @@ class CacheCleaner:
         """删除并重建缓存目录"""
         loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(None, shutil.rmtree, self.cfg.cache_dir)
-            self.cfg.cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_dir = self.cfg.ensure_dir(self.cfg.cache_dir)
+            await loop.run_in_executor(None, shutil.rmtree, cache_dir)
+            self.cfg.ensure_dir(self.cfg.cache_dir)
             logger.info("Cache directory cleaned and recreated.")
         except Exception:
             logger.exception("Error while cleaning cache directory.")

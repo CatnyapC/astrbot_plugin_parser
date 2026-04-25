@@ -122,7 +122,8 @@ class Downloader:
         """流式下载"""
         if not file_name:
             file_name = generate_file_name(url)
-        file_path = self.cfg.cache_dir / file_name
+        cache_dir = self.cfg.ensure_dir(self.cfg.cache_dir)
+        file_path = cache_dir / file_name
         # 如果文件存在，则直接返回
         if file_path.exists():
             return file_path
@@ -360,7 +361,8 @@ class Downloader:
         if info.duration > self.cfg.max_duration:
             raise DurationLimitException
 
-        video_path = self.cfg.cache_dir / generate_file_name(url, ".mp4")
+        cache_dir = self.cfg.ensure_dir(self.cfg.cache_dir)
+        video_path = cache_dir / generate_file_name(url, ".mp4")
         if video_path.exists():
             return video_path
 
@@ -398,7 +400,8 @@ class Downloader:
         node: bool = False,
     ) -> Path:
         file_stem = generate_file_name(url)
-        video_path = self.cfg.cache_dir / f"{file_stem}.mp4"
+        cache_dir = self.cfg.ensure_dir(self.cfg.cache_dir)
+        video_path = cache_dir / f"{file_stem}.mp4"
         if video_path.exists():
             return video_path
 
@@ -411,7 +414,7 @@ class Downloader:
             no_warnings=True,
         )
         opts.update({
-            "outtmpl": str(self.cfg.cache_dir / file_stem) + ".%(ext)s",
+            "outtmpl": str(cache_dir / file_stem) + ".%(ext)s",
             "merge_output_format": "mp4",
             "postprocessors": [
                 {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"}
@@ -425,7 +428,7 @@ class Downloader:
         if video_path.exists():
             return video_path
 
-        candidates = sorted(self.cfg.cache_dir.glob(f"{file_stem}*.mp4"))
+        candidates = sorted(cache_dir.glob(f"{file_stem}*.mp4"))
         if candidates:
             return candidates[0]
         raise DownloadException("yt-dlp 视频下载失败")
@@ -441,7 +444,8 @@ class Downloader:
         format: str | None = None,
     ) -> Path:
         file_name = generate_file_name(url)
-        audio_path = self.cfg.cache_dir / f"{file_name}.flac"
+        cache_dir = self.cfg.ensure_dir(self.cfg.cache_dir)
+        audio_path = cache_dir / f"{file_name}.flac"
         if audio_path.exists():
             return audio_path
 
@@ -452,7 +456,7 @@ class Downloader:
             format=format or "bestaudio/best",
         )
         opts.update({
-            "outtmpl": str(self.cfg.cache_dir / file_name) + ".%(ext)s",
+            "outtmpl": str(cache_dir / file_name) + ".%(ext)s",
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
