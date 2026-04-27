@@ -245,6 +245,7 @@ class BaseParser:
         headers: dict[str, str] | None = None,
     ):
         """创建视频内容"""
+        source_key = url_or_task if isinstance(url_or_task, str) else None
         cover_task = None
         if cover_url:
             cover_task = self.downloader.download_img(
@@ -255,7 +256,9 @@ class BaseParser:
                 url_or_task, headers=headers or self.headers, proxy=self.proxy
             )
 
-        return VideoContent(url_or_task, cover_task, duration)
+        return VideoContent(
+            url_or_task, cover_task, duration, source_key=source_key
+        )
 
     def create_video_content_by_task(
         self,
@@ -263,6 +266,8 @@ class BaseParser:
         cover_url: str | None = None,
         duration: float = 0.0,
         headers: dict[str, str] | None = None,
+        *,
+        source_key: str | None = None,
     ):
         """创建视频内容，允许调用方自行决定下载任务实现"""
         cover_task = None
@@ -270,7 +275,7 @@ class BaseParser:
             cover_task = self.downloader.download_img(
                 cover_url, headers=headers or self.headers, proxy=self.proxy
             )
-        return VideoContent(path_task, cover_task, duration)
+        return VideoContent(path_task, cover_task, duration, source_key=source_key)
 
     def create_image_contents(
         self,
@@ -283,7 +288,7 @@ class BaseParser:
             task = self.downloader.download_img(
                 url, headers=headers or self.headers, proxy=self.proxy
             )
-            contents.append(ImageContent(task))
+            contents.append(ImageContent(task, source_key=url))
         return contents
 
     def create_dynamic_contents(
@@ -297,7 +302,7 @@ class BaseParser:
             task = self.downloader.download_video(
                 url, headers=headers or self.headers, proxy=self.proxy
             )
-            contents.append(DynamicContent(task))
+            contents.append(DynamicContent(task, source_key=url))
         return contents
 
     def create_audio_content(
@@ -307,12 +312,13 @@ class BaseParser:
         headers: dict[str, str] | None = None,
     ):
         """创建音频内容"""
+        source_key = url_or_task if isinstance(url_or_task, str) else None
         if isinstance(url_or_task, str):
             url_or_task = self.downloader.download_audio(
                 url_or_task, headers=headers or self.headers, proxy=self.proxy
             )
 
-        return AudioContent(url_or_task, duration)
+        return AudioContent(url_or_task, duration, source_key=source_key)
 
     def create_graphics_content(
         self,
@@ -325,7 +331,7 @@ class BaseParser:
         image_task = self.downloader.download_img(
             image_url, headers=headers or self.headers, proxy=self.proxy
         )
-        return GraphicsContent(image_task, text, alt)
+        return GraphicsContent(image_task, text, alt, source_key=image_url)
 
     def create_file_content(
         self,
@@ -334,6 +340,7 @@ class BaseParser:
         headers: dict[str, str] | None = None,
     ):
         """创建文件内容"""
+        source_key = url_or_task if isinstance(url_or_task, str) else None
         if isinstance(url_or_task, str):
             url_or_task = self.downloader.download_file(
                 url_or_task,
@@ -342,4 +349,4 @@ class BaseParser:
                 proxy=self.proxy,
             )
 
-        return FileContent(url_or_task)
+        return FileContent(url_or_task, source_key=source_key)

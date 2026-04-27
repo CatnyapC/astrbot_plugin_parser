@@ -16,6 +16,7 @@ def repr_path_task(path_task: Path | Task[Path]) -> str:
 @dataclass(repr=False, slots=True)
 class MediaContent:
     path_task: Path | Task[Path]
+    source_key: str | None = field(default=None, kw_only=True)
 
     async def get_path(self) -> Path:
         if isinstance(self.path_task, Path):
@@ -296,18 +297,10 @@ class ParseResult:
                 h.update(str(v).encode("utf-8"))
             h.update(b"|")
 
-        add(self.platform.name)
-        add(self.url)
-        add(self.timestamp)
-        if self.author:
-            add(self.author.name)
-
-        # ---------- 内容结构 ----------
-        add(len(self.contents))
-        for cont in self.contents:
+        def add_content_fingerprint(cont: MediaContent):
             add(cont.__class__.__name__)
+            add(cont.source_key)
 
-            # 子类补充（仍然是 O(1)）
             if isinstance(cont, VideoContent):
                 add(cont.duration)
             elif isinstance(cont, AudioContent):
@@ -320,24 +313,24 @@ class ParseResult:
             elif isinstance(cont, TextContent):
                 add(cont.text)
 
+        add(self.platform.name)
+        add(self.url)
+        add(self.timestamp)
+        if self.author:
+            add(self.author.name)
+
+        # ---------- 内容结构 ----------
+        add(len(self.contents))
+        for cont in self.contents:
+            add_content_fingerprint(cont)
+
         add(len(self.send_groups))
         for group in self.send_groups:
             add(group.force_merge)
             add(group.render_card)
             add(len(group.contents))
             for cont in group.contents:
-                add(cont.__class__.__name__)
-                if isinstance(cont, VideoContent):
-                    add(cont.duration)
-                elif isinstance(cont, AudioContent):
-                    add(cont.duration)
-                elif isinstance(cont, FileContent):
-                    add(cont.name)
-                elif isinstance(cont, GraphicsContent):
-                    add(cont.text)
-                    add(cont.alt)
-                elif isinstance(cont, TextContent):
-                    add(cont.text)
+                add_content_fingerprint(cont)
 
         # ---------- 转发 ----------
         if self.repost:

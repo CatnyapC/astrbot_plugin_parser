@@ -7,7 +7,7 @@ from astrbot.core.message.components import Image, Nodes, Plain, Video
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core.data import Author, ParseResult, Platform
+from core.data import Author, ImageContent, ParseResult, Platform
 from core.debounce import Debouncer
 from core.sender import MessageSender
 
@@ -275,6 +275,22 @@ def test_resource_debounce_marks_only_after_success():
     debouncer.mark_resource(session, resource_id)
 
     assert debouncer.check_resource(session, resource_id) is True
+
+
+def test_resource_id_uses_media_source_key():
+    platform = Platform(name="twitter", display_name="推特")
+    result1 = ParseResult(
+        platform=platform,
+        author=Author(name="无用户名"),
+        contents=[ImageContent(Path("a.jpg"), source_key="https://img.example/a.jpg")],
+    )
+    result2 = ParseResult(
+        platform=platform,
+        author=Author(name="无用户名"),
+        contents=[ImageContent(Path("b.jpg"), source_key="https://img.example/b.jpg")],
+    )
+
+    assert result1.get_resource_id() != result2.get_resource_id()
 
 
 def test_send_preview_card_archives_sent_chain(tmp_path):
