@@ -129,6 +129,7 @@ class XHSParser(BaseParser):
             title=note_detail.title,
             text=note_detail.desc,
             author=author,
+            url=url,
             contents=contents,
         )
 
@@ -205,6 +206,7 @@ class XHSParser(BaseParser):
             contents=contents,
             text=note_data.desc,
             timestamp=note_data.time // 1000,
+            url=url,
         )
 
     def _extract_initial_state_json(self, html: str) -> dict[str, Any]:
