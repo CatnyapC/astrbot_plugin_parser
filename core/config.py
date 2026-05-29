@@ -209,6 +209,9 @@ class PluginConfig(ConfigNode):
     common_timeout: int
 
     proxy: str | None
+    parser_video_slice_controller_ids: str | list[str] | None
+    parser_video_slice_max_duration_sec: int | None
+    parser_video_slice_timeout_sec: int | None
 
     clean_cron: str
 

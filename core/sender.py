@@ -4,6 +4,9 @@ from pathlib import Path
 from random import SystemRandom
 from uuid import uuid4
 
+from PIL import Image as PILImage
+from PIL import ImageEnhance, ImageOps
+
 from astrbot.api import logger
 from astrbot.core.message.components import (
     BaseMessageComponent,
@@ -16,7 +19,6 @@ from astrbot.core.message.components import (
     Video,
 )
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
-from PIL import Image as PILImage, ImageEnhance, ImageOps
 
 from .config import PluginConfig
 from .data import (
@@ -37,6 +39,7 @@ from .exception import (
     ZeroSizeException,
 )
 from .render import Renderer
+from .video_slice import VideoSliceCacheIndex, record_video_slice_cache_from_group
 
 SEND_TIMEOUT_SECONDS = 300.0
 SEND_RETRY_TIMEOUT_SECONDS = 600.0
@@ -58,11 +61,18 @@ class MessageSender:
     - 只负责“怎么发”
     """
 
-    def __init__(self, config: PluginConfig, renderer: Renderer, context=None):
+    def __init__(
+        self,
+        config: PluginConfig,
+        renderer: Renderer,
+        context=None,
+        video_slice_cache: VideoSliceCacheIndex | None = None,
+    ):
         self.cfg = config
         self.renderer = renderer
         self.context = context
         self._rand = SystemRandom()
+        self.video_slice_cache = video_slice_cache
 
     def _to_file_uri(self, path: Path) -> str:
         path = path.resolve()
@@ -546,6 +556,7 @@ class MessageSender:
                 source="parser_send_group",
                 raw_json_extra={"force_merge": bool(plan["force_merge"])},
             )
+            await self._record_video_slice_cache(event, group)
             return True
         except Exception as e:
             if isinstance(e, TimeoutError):
@@ -568,6 +579,7 @@ class MessageSender:
                             "image_retry": "normalized_reencode",
                         },
                     )
+                    await self._record_video_slice_cache(event, group)
                     return True
                 except Exception as retry_exc:
                     e = retry_exc
@@ -588,6 +600,7 @@ class MessageSender:
                             "image_retry": "perturbed_png",
                         },
                     )
+                    await self._record_video_slice_cache(event, group)
                     return True
                 except Exception as retry_exc:
                     e = retry_exc
@@ -595,6 +608,11 @@ class MessageSender:
             seg_meta = self._collect_seg_meta(segs)
             logger.error(f"发送解析结果失败： error={e}, segments={seg_meta}")
             return False
+
+    async def _record_video_slice_cache(self, event: AstrMessageEvent, group: SendGroup) -> None:
+        if self.video_slice_cache is None:
+            return
+        await record_video_slice_cache_from_group(self.video_slice_cache, event=event, group=group)
 
     @staticmethod
     def _collect_seg_meta(segs: list[BaseMessageComponent]) -> list[dict[str, str]]:

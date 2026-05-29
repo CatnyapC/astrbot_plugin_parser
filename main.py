@@ -22,6 +22,7 @@ from .core.parsers import BaseParser, BilibiliParser
 from .core.render import Renderer
 from .core.sender import MessageSender
 from .core.utils import extract_json_url
+from .core.video_slice import VideoSliceCacheIndex, VideoSliceCommandService
 
 
 class ParserPlugin(Star):
@@ -36,8 +37,19 @@ class ParserPlugin(Star):
         self.debouncer = Debouncer(self.cfg)
         # 仲裁器
         self.arbiter = EmojiLikeArbiter()
+        self.video_slice_cache = VideoSliceCacheIndex()
         # 消息发送器
-        self.sender = MessageSender(self.cfg, self.renderer, context=context)
+        self.sender = MessageSender(
+            self.cfg,
+            self.renderer,
+            context=context,
+            video_slice_cache=self.video_slice_cache,
+        )
+        self.video_slice_service = VideoSliceCommandService(
+            cfg=self.cfg,
+            sender=self.sender,
+            cache_index=self.video_slice_cache,
+        )
         # 缓存清理器
         self.cleaner = CacheCleaner(self.cfg)
         # 关键词 -> Parser 映射
@@ -277,6 +289,8 @@ class ParserPlugin(Star):
 
         if not text:
             return
+        if text.strip().lstrip("/").startswith("parserclip "):
+            return
 
         self_id = event.get_self_id()
 
@@ -349,3 +363,12 @@ class ParserPlugin(Star):
         yield event.chain_result([Image.fromBytes(qrcode)])
         async for msg in parser.login.check_qr_state():
             yield event.plain_result(msg)
+
+    @filter.command("parserclip", alias={"/parserclip"})
+    async def parserclip_command(self, event: AstrMessageEvent):
+        """Reviewed parser cache video slice command."""
+        result = await self.video_slice_service.handle(event)
+        if result.status == "ignored" or result.sent:
+            return
+        if result.message:
+            yield event.plain_result(result.message)
