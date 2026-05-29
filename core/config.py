@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import zoneinfo
 from collections.abc import Mapping, MutableMapping
+from pathlib import Path
 from types import MappingProxyType, UnionType
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
@@ -209,6 +209,9 @@ class PluginConfig(ConfigNode):
     common_timeout: int
 
     proxy: str | None
+    parser_video_slice_controller_ids: str | list[str] | None
+    parser_video_slice_max_duration_sec: int | None
+    parser_video_slice_timeout_sec: int | None
 
     clean_cron: str
 
