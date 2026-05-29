@@ -119,6 +119,129 @@ class ParserPlugin(Star):
     def _should_skip_router_requeue(event: AstrMessageEvent) -> bool:
         return bool(event.get_extra("_router_timeout_requeue", False))
 
+    @staticmethod
+    def _normalize_command_user_id(user_id: str) -> str:
+        return str(user_id or "").strip()
+
+    async def _can_manage_whitelist(self, event: AstrMessageEvent) -> tuple[bool, str]:
+        if event.is_admin():
+            return True, ""
+
+        group_id = str(event.get_group_id() or "").strip()
+        if not group_id:
+            return False, "请在群聊中使用 parserwl。"
+
+        get_group = getattr(event, "get_group", None)
+        if get_group is None:
+            return False, "当前平台不支持读取群权限。"
+
+        try:
+            group = await get_group(group_id)
+        except Exception as e:
+            logger.warning(f"[parser] 获取群权限失败: {e}")
+            return False, "读取群权限失败，无法修改 parser 白名单。"
+        if group is None:
+            return False, "读取群权限失败，无法修改 parser 白名单。"
+
+        sender_id = str(event.get_sender_id())
+        owner_id = str(getattr(group, "group_owner", "") or "")
+        admin_ids = {
+            str(user_id)
+            for user_id in (getattr(group, "group_admins", []) or [])
+            if str(user_id)
+        }
+        if sender_id == owner_id or sender_id in admin_ids:
+            return True, ""
+
+        return False, "只有群主/管理员可以修改 parser 白名单。"
+
+    @filter.command_group("parserwl")
+    def parserwl(self) -> None:
+        """parser 白名单管理"""
+
+    @parserwl.command("list")
+    async def parserwl_list(self, event: AstrMessageEvent):
+        """查看当前群 parser 白名单"""
+        allowed, reason = await self._can_manage_whitelist(event)
+        if not allowed:
+            yield event.plain_result(reason)
+            return
+
+        group_id = str(event.get_group_id() or "").strip()
+        if not group_id:
+            yield event.plain_result("请在群聊中使用 parserwl。")
+            return
+
+        users = sorted(self.cfg.group_user_whitelist.get(group_id, set()))
+        if users:
+            yield event.plain_result(
+                f"当前群 parser 白名单：{', '.join(users)}"
+            )
+        else:
+            yield event.plain_result("当前群 parser 白名单为空。")
+
+    @parserwl.command("add")
+    async def parserwl_add(self, event: AstrMessageEvent, user_id: str = ""):
+        """添加当前群 parser 白名单用户"""
+        allowed, reason = await self._can_manage_whitelist(event)
+        if not allowed:
+            yield event.plain_result(reason)
+            return
+
+        group_id = str(event.get_group_id() or "").strip()
+        user_id = self._normalize_command_user_id(user_id)
+        if not group_id:
+            yield event.plain_result("请在群聊中使用 parserwl。")
+            return
+        if not user_id:
+            yield event.plain_result("用法：/parserwl add <user_id>")
+            return
+
+        if self.cfg.add_whitelist_user(group_id, user_id):
+            yield event.plain_result(f"已添加 parser 白名单用户：{user_id}")
+        else:
+            yield event.plain_result(f"parser 白名单已包含：{user_id}")
+
+    @parserwl.command("remove")
+    async def parserwl_remove(self, event: AstrMessageEvent, user_id: str = ""):
+        """移除当前群 parser 白名单用户"""
+        allowed, reason = await self._can_manage_whitelist(event)
+        if not allowed:
+            yield event.plain_result(reason)
+            return
+
+        group_id = str(event.get_group_id() or "").strip()
+        user_id = self._normalize_command_user_id(user_id)
+        if not group_id:
+            yield event.plain_result("请在群聊中使用 parserwl。")
+            return
+        if not user_id:
+            yield event.plain_result("用法：/parserwl remove <user_id>")
+            return
+
+        if self.cfg.remove_whitelist_user(group_id, user_id):
+            yield event.plain_result(f"已移除 parser 白名单用户：{user_id}")
+        else:
+            yield event.plain_result(f"parser 白名单中不存在：{user_id}")
+
+    @parserwl.command("clear")
+    async def parserwl_clear(self, event: AstrMessageEvent):
+        """清空当前群 parser 白名单"""
+        allowed, reason = await self._can_manage_whitelist(event)
+        if not allowed:
+            yield event.plain_result(reason)
+            return
+
+        group_id = str(event.get_group_id() or "").strip()
+        if not group_id:
+            yield event.plain_result("请在群聊中使用 parserwl。")
+            return
+
+        if self.cfg.clear_whitelist_group(group_id):
+            yield event.plain_result("已清空当前群 parser 白名单。")
+        else:
+            yield event.plain_result("当前群 parser 白名单已为空。")
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
         """消息的统一入口"""

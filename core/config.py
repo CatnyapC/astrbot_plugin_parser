@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import zoneinfo
 from collections.abc import Mapping, MutableMapping
+from pathlib import Path
 from types import MappingProxyType, UnionType
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
@@ -386,6 +386,67 @@ class PluginConfig(ConfigNode):
     @staticmethod
     def should_apply_whitelist(platform_name: str) -> bool:
         return platform_name in {"youtube", "twitter"}
+
+    def whitelist_data(self) -> dict[str, list[str]]:
+        return {
+            str(group_id): sorted(str(user_id) for user_id in users)
+            for group_id, users in self.group_user_whitelist.items()
+            if users
+        }
+
+    def _save_whitelist_data(self, data: dict[str, list[str]]) -> None:
+        cleaned = {
+            str(group_id): sorted(
+                {str(user_id).strip() for user_id in users if str(user_id).strip()}
+            )
+            for group_id, users in data.items()
+            if str(group_id).strip()
+        }
+        cleaned = {group_id: users for group_id, users in cleaned.items() if users}
+        self.whitelist = json.dumps(cleaned, ensure_ascii=False, sort_keys=True)
+        self.group_user_whitelist = self._cfg_group_user_whitelist(self.whitelist)
+        self.save_config()
+
+    def add_whitelist_user(self, group_id: str, user_id: str) -> bool:
+        gid = str(group_id or "").strip()
+        uid = str(user_id or "").strip()
+        if not gid or not uid:
+            return False
+
+        data = self.whitelist_data()
+        users = set(data.get(gid, []))
+        if uid in users:
+            return False
+        users.add(uid)
+        data[gid] = sorted(users)
+        self._save_whitelist_data(data)
+        return True
+
+    def remove_whitelist_user(self, group_id: str, user_id: str) -> bool:
+        gid = str(group_id or "").strip()
+        uid = str(user_id or "").strip()
+        data = self.whitelist_data()
+        users = set(data.get(gid, []))
+        if not gid or not uid or uid not in users:
+            return False
+
+        users.remove(uid)
+        if users:
+            data[gid] = sorted(users)
+        else:
+            data.pop(gid, None)
+        self._save_whitelist_data(data)
+        return True
+
+    def clear_whitelist_group(self, group_id: str) -> bool:
+        gid = str(group_id or "").strip()
+        data = self.whitelist_data()
+        if not gid or gid not in data:
+            return False
+
+        data.pop(gid, None)
+        self._save_whitelist_data(data)
+        return True
 
     def is_whitelist_allowed(self, group_id: str, user_id: str) -> bool:
         if not self.group_user_whitelist:

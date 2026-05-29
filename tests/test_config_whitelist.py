@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -9,6 +10,20 @@ from core.config import PluginConfig
 def build_cfg(group_user_whitelist: dict[str, set[str]]) -> PluginConfig:
     cfg = object.__new__(PluginConfig)
     cfg.group_user_whitelist = group_user_whitelist
+    return cfg
+
+
+def build_persistent_cfg(raw_whitelist: str = "{}") -> PluginConfig:
+    cfg = object.__new__(PluginConfig)
+    object.__setattr__(cfg, "_data", {"whitelist": raw_whitelist})
+    object.__setattr__(cfg, "_children", {})
+    cfg.group_user_whitelist = PluginConfig._cfg_group_user_whitelist(raw_whitelist)
+    cfg.save_count = 0
+
+    def save_config():
+        cfg.save_count += 1
+
+    cfg.save_config = save_config
     return cfg
 
 
@@ -66,3 +81,32 @@ def test_should_apply_whitelist_only_for_youtube_and_twitter():
     assert PluginConfig.should_apply_whitelist("twitter") is True
     assert PluginConfig.should_apply_whitelist("bilibili") is False
     assert PluginConfig.should_apply_whitelist("douyin") is False
+
+
+def test_add_whitelist_user_persists_json_and_runtime_cache():
+    cfg = build_persistent_cfg("{}")
+
+    assert cfg.add_whitelist_user("123456", "10002") is True
+    assert json.loads(cfg.whitelist) == {"123456": ["10002"]}
+    assert cfg.group_user_whitelist == {"123456": {"10002"}}
+    assert cfg.save_count == 1
+
+
+def test_remove_whitelist_user_persists_json_and_reports_missing():
+    cfg = build_persistent_cfg('{"123456":["10001","10002"]}')
+
+    assert cfg.remove_whitelist_user("123456", "10001") is True
+    assert json.loads(cfg.whitelist) == {"123456": ["10002"]}
+    assert cfg.group_user_whitelist == {"123456": {"10002"}}
+    assert cfg.remove_whitelist_user("123456", "99999") is False
+    assert cfg.save_count == 1
+
+
+def test_clear_whitelist_group_removes_group_and_saves_empty_object():
+    cfg = build_persistent_cfg('{"123456":["10001"]}')
+
+    assert cfg.clear_whitelist_group("123456") is True
+    assert json.loads(cfg.whitelist) == {}
+    assert cfg.group_user_whitelist == {}
+    assert cfg.clear_whitelist_group("123456") is False
+    assert cfg.save_count == 1
