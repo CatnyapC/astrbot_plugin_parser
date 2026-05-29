@@ -7,9 +7,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.config import PluginConfig
 
 
-def build_cfg(group_user_whitelist: dict[str, set[str]]) -> PluginConfig:
+def build_cfg(
+    group_user_whitelist: dict[str, set[str]],
+    admins_id: list[str] | None = None,
+) -> PluginConfig:
     cfg = object.__new__(PluginConfig)
     cfg.group_user_whitelist = group_user_whitelist
+    cfg.admins_id = admins_id or []
     return cfg
 
 
@@ -68,6 +72,29 @@ def test_is_whitelist_allowed_checks_current_group_and_user():
     assert cfg.is_whitelist_allowed("123456", "10001") is True
     assert cfg.is_whitelist_allowed("123456", "99999") is False
     assert cfg.is_whitelist_allowed("654321", "10001") is False
+
+
+def test_is_whitelist_allowed_allows_admin_outside_group_whitelist():
+    cfg = build_cfg({"123456": {"10001"}}, admins_id=["99999"])
+
+    assert cfg.is_whitelist_allowed("123456", "99999") is True
+
+
+def test_is_whitelist_allowed_keeps_non_admin_group_whitelist_behavior():
+    cfg = build_cfg({"123456": {"10001"}}, admins_id=["99999"])
+
+    assert cfg.is_whitelist_allowed("123456", "10001") is True
+    assert cfg.is_whitelist_allowed("123456", "10002") is False
+
+
+def test_is_whitelist_allowed_admin_bypass_works_across_groups():
+    cfg = build_cfg(
+        {"123456": {"10001"}, "654321": {"20001"}},
+        admins_id=["99999"],
+    )
+
+    assert cfg.is_whitelist_allowed("123456", "99999") is True
+    assert cfg.is_whitelist_allowed("654321", "99999") is True
 
 
 def test_is_whitelist_allowed_allows_private_when_whitelist_exists():

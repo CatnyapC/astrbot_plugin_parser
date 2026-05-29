@@ -45,7 +45,6 @@ class ParserPlugin(Star):
         # 关键词 -> 正则 列表
         self.key_pattern_list: list[tuple[str, re.Pattern[str]]] = []
 
-
     async def initialize(self):
         """加载、重载插件时触发"""
         # 加载渲染器资源
@@ -123,6 +122,18 @@ class ParserPlugin(Star):
     def _normalize_command_user_id(user_id: str) -> str:
         return str(user_id or "").strip()
 
+    def _is_parse_whitelist_allowed(
+        self,
+        event: AstrMessageEvent,
+        group_id: str | None,
+        user_id: str,
+    ) -> bool:
+        if event.is_admin():
+            return True
+        if self.cfg.is_admin_user(user_id):
+            return True
+        return self.cfg.is_whitelist_allowed(group_id, user_id)
+
     async def _can_manage_whitelist(self, event: AstrMessageEvent) -> tuple[bool, str]:
         if event.is_admin():
             return True, ""
@@ -174,9 +185,7 @@ class ParserPlugin(Star):
 
         users = sorted(self.cfg.group_user_whitelist.get(group_id, set()))
         if users:
-            yield event.plain_result(
-                f"当前群 parser 白名单：{', '.join(users)}"
-            )
+            yield event.plain_result(f"当前群 parser 白名单：{', '.join(users)}")
         else:
             yield event.plain_result("当前群 parser 白名单为空。")
 
@@ -290,7 +299,7 @@ class ParserPlugin(Star):
 
         parser = self.parser_map[keyword]
         if self.cfg.should_apply_whitelist(parser.platform.name):
-            if not self.cfg.is_whitelist_allowed(group_id, user_id):
+            if not self._is_parse_whitelist_allowed(event, group_id, user_id):
                 return
 
         # 仲裁机制

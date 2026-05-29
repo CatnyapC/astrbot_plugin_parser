@@ -387,6 +387,16 @@ class PluginConfig(ConfigNode):
     def should_apply_whitelist(platform_name: str) -> bool:
         return platform_name in {"youtube", "twitter"}
 
+    def is_admin_user(self, user_id: str) -> bool:
+        uid = str(user_id or "").strip()
+        if not uid:
+            return False
+        return uid in {
+            str(admin_id).strip()
+            for admin_id in getattr(self, "admins_id", [])
+            if str(admin_id).strip()
+        }
+
     def whitelist_data(self) -> dict[str, list[str]]:
         return {
             str(group_id): sorted(str(user_id) for user_id in users)
@@ -449,11 +459,13 @@ class PluginConfig(ConfigNode):
         return True
 
     def is_whitelist_allowed(self, group_id: str, user_id: str) -> bool:
+        uid = str(user_id or "").strip()
+        if self.is_admin_user(uid):
+            return True
         if not self.group_user_whitelist:
             return True
 
         gid = str(group_id or "").strip()
-        uid = str(user_id or "").strip()
         if not uid:
             return False
         if not gid:

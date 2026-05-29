@@ -7,6 +7,34 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from astrbot_plugin_parser.main import ParserPlugin
 
 
+class DummyConfig:
+    def __init__(
+        self,
+        group_user_whitelist: dict[str, set[str]],
+        admins_id: list[str] | None = None,
+    ):
+        self.group_user_whitelist = group_user_whitelist
+        self.admins_id = admins_id or []
+
+    def is_admin_user(self, user_id: str) -> bool:
+        uid = str(user_id or "").strip()
+        return uid in {str(admin_id).strip() for admin_id in self.admins_id}
+
+    def is_whitelist_allowed(self, group_id: str | None, user_id: str) -> bool:
+        uid = str(user_id or "").strip()
+        if not self.group_user_whitelist:
+            return True
+        gid = str(group_id or "").strip()
+        if not uid:
+            return False
+        if not gid:
+            return True
+        allowed = self.group_user_whitelist.get(gid)
+        if allowed is None:
+            allowed = self.group_user_whitelist.get("*")
+        return allowed is not None and uid in allowed
+
+
 class DummyGroup:
     def __init__(self, *, owner: str = "", admins: list[str] | None = None):
         self.group_owner = owner
@@ -56,15 +84,64 @@ def can_manage(event: DummyEvent):
     return asyncio.run(plugin._can_manage_whitelist(event))
 
 
-def test_should_skip_router_requeue_true():
-    assert ParserPlugin._should_skip_router_requeue(
-        DummyEvent(timeout_requeue=True)
+def parse_whitelist_allowed(
+    event: DummyEvent,
+    group_user_whitelist: dict[str, set[str]],
+    admins_id: list[str] | None = None,
+):
+    plugin = object.__new__(ParserPlugin)
+    plugin.cfg = DummyConfig(group_user_whitelist, admins_id=admins_id)
+    return plugin._is_parse_whitelist_allowed(
+        event,
+        event.get_group_id(),
+        event.get_sender_id(),
     )
+
+
+def test_should_skip_router_requeue_true():
+    assert ParserPlugin._should_skip_router_requeue(DummyEvent(timeout_requeue=True))
 
 
 def test_should_skip_router_requeue_false():
     assert not ParserPlugin._should_skip_router_requeue(
         DummyEvent(timeout_requeue=False)
+    )
+
+
+def test_parse_whitelist_allows_runtime_admin_in_any_group():
+    whitelist = {"123456": {"10001"}}
+
+    assert parse_whitelist_allowed(
+        DummyEvent(sender_id="admin42", group_id="123456"),
+        whitelist,
+        admins_id=["admin42"],
+    )
+    assert parse_whitelist_allowed(
+        DummyEvent(sender_id="admin42", group_id="654321"),
+        whitelist,
+        admins_id=["admin42"],
+    )
+
+
+def test_parse_whitelist_keeps_non_admin_group_behavior():
+    whitelist = {"123456": {"10001"}}
+
+    assert parse_whitelist_allowed(
+        DummyEvent(sender_id="10001", group_id="123456"),
+        whitelist,
+        admins_id=["admin42"],
+    )
+    assert not parse_whitelist_allowed(
+        DummyEvent(sender_id="10002", group_id="123456"),
+        whitelist,
+        admins_id=["admin42"],
+    )
+
+
+def test_parse_whitelist_allows_event_admin_role():
+    assert parse_whitelist_allowed(
+        DummyEvent(sender_id="10002", group_id="123456", is_admin=True),
+        {"123456": {"10001"}},
     )
 
 
