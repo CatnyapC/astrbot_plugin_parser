@@ -89,6 +89,16 @@ def test_parse_parserclip_slice_command_contract() -> None:
     assert parsed.nonce == "pvs-g1-10001-123"
 
 
+def test_parse_parserclip_slice_command_accepts_missing_legacy_requester() -> None:
+    parsed = parse_parserclip_slice_command(
+        "/parserclip slice --source latest --start 90 --duration 10 --nonce pvs-g1-123"
+    )
+
+    assert parsed is not None
+    assert parsed.requester_id == ""
+    assert parsed.nonce == "pvs-g1-123"
+
+
 def test_cache_source_resolver_reply_current_latest_and_ambiguous(tmp_path: Path) -> None:
     cache = VideoSliceCacheIndex()
     first = cache.record(group_id="g1", path=_video(tmp_path, "a.mp4"), source_raw_id="r1")
@@ -166,7 +176,7 @@ def test_cache_cleaner_prunes_video_slice_index(tmp_path: Path) -> None:
     assert json.loads(persist_path.read_text(encoding="utf-8"))["entries"] == []
 
 
-def test_controller_allowlist_and_group_guard(tmp_path: Path) -> None:
+def test_group_guard_still_rejects_private(tmp_path: Path) -> None:
     service = VideoSliceCommandService(
         cfg=_cfg(tmp_path),
         sender=DummySender(),
@@ -174,17 +184,36 @@ def test_controller_allowlist_and_group_guard(tmp_path: Path) -> None:
         run_process=lambda *_: _ok_probe(),
     )
 
-    rejected = asyncio.run(service.handle(DummyEvent(sender_id="ordinary", self_id="bot1")))
-    assert rejected.status == "rejected"
-    assert "无权" in rejected.message
-
-    allowed_admin = asyncio.run(service.handle(DummyEvent(sender_id="group-admin", self_id="bot1", is_admin=True)))
-    assert allowed_admin.status != "rejected"
-    assert "无权" not in allowed_admin.message
-
     private = asyncio.run(service.handle(DummyEvent(group_id="", sender_id="bot1", self_id="bot1")))
     assert private.status == "rejected"
     assert "群聊" in private.message
+
+
+def test_ordinary_non_admin_can_execute_slice(tmp_path: Path) -> None:
+    source = _video(tmp_path)
+    cache = VideoSliceCacheIndex()
+    cache.record(group_id="g1", path=source, source_raw_id="src-video", duration=20)
+    sender = DummySender()
+
+    async def run_process(cmd: list[str], _timeout: float) -> tuple[int, str, str]:
+        if cmd[0] == "ffprobe":
+            return 0, json.dumps({"streams": [{"codec_type": "video"}], "format": {"duration": "20.0"}}), ""
+        Path(cmd[-1]).write_bytes(b"clip")
+        return 0, "", ""
+
+    service = VideoSliceCommandService(
+        cfg=_cfg(tmp_path),
+        sender=sender,
+        cache_index=cache,
+        run_process=run_process,
+        platform_system=lambda: "Linux",
+    )
+
+    result = asyncio.run(service.handle(DummyEvent(sender_id="ordinary", self_id="bot1")))
+
+    assert result.status == "ok"
+    assert result.sent is True
+    assert len(sender.results) == 1
 
 
 def test_slice_uses_ffprobe_ffmpeg_fallback_and_sender_path(tmp_path: Path) -> None:
@@ -248,6 +277,71 @@ def test_nonce_duplicate_suppresses_second_upload(tmp_path: Path) -> None:
     assert first.status == "ok"
     assert second.status == "duplicate"
     assert len(sender.results) == 1
+
+
+def test_global_rate_limit_rejects_thirty_first_request(tmp_path: Path) -> None:
+    source = _video(tmp_path)
+    cache = VideoSliceCacheIndex()
+    cache.record(group_id="g1", path=source, source_raw_id="src-video", duration=20)
+    sender = DummySender()
+
+    async def run_process(cmd: list[str], _timeout: float) -> tuple[int, str, str]:
+        if cmd[0] == "ffprobe":
+            return 0, json.dumps({"streams": [{"codec_type": "video"}], "format": {"duration": "20.0"}}), ""
+        Path(cmd[-1]).write_bytes(b"clip")
+        return 0, "", ""
+
+    service = VideoSliceCommandService(
+        cfg=_cfg(tmp_path),
+        sender=sender,
+        cache_index=cache,
+        run_process=run_process,
+        platform_system=lambda: "Linux",
+    )
+
+    for idx in range(30):
+        result = asyncio.run(
+            service.handle(
+                DummyEvent(
+                    text=f"/parserclip slice --source reply --start 2 --duration 3 --nonce n{idx}",
+                    sender_id="ordinary",
+                    self_id="bot1",
+                )
+            )
+        )
+        assert result.status == "ok"
+
+    limited = asyncio.run(
+        service.handle(
+            DummyEvent(
+                text="/parserclip slice --source reply --start 2 --duration 3 --nonce n31",
+                sender_id="ordinary",
+                self_id="bot1",
+            )
+        )
+    )
+
+    assert limited.status == "rate_limited"
+    assert "每小时最多30次" in limited.message
+
+    restarted = VideoSliceCommandService(
+        cfg=_cfg(tmp_path),
+        sender=DummySender(),
+        cache_index=cache,
+        run_process=run_process,
+        platform_system=lambda: "Linux",
+    )
+    after_restart = asyncio.run(
+        restarted.handle(
+            DummyEvent(
+                text="/parserclip slice --source reply --start 2 --duration 3 --nonce n-restart",
+                sender_id="ordinary",
+                self_id="bot1",
+            )
+        )
+    )
+
+    assert after_restart.status == "ok"
 
 
 async def _ok_probe() -> tuple[int, str, str]:

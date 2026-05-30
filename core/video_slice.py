@@ -243,19 +243,22 @@ class VideoSliceCommandService:
         self.run_process = run_process or _run_process
         self.platform_system = platform_system or platform.system
         self._completed_nonces: set[str] = set()
+        self._rate_limit_started_at = time.time()
+        self._rate_limit_count = 0
+        self._rate_limit_window_sec = 3600.0
+        self._rate_limit_max = 30
 
     async def handle(self, event: Any) -> VideoSliceResult:
         command = parse_parserclip_slice_command(_event_text(event))
         if command is None:
             return VideoSliceResult("ignored", "")
         group_id = str(event.get_group_id() or "").strip()
-        sender_id = str(event.get_sender_id() or "").strip()
         if not group_id:
             return VideoSliceResult("rejected", "parserclip slice 仅支持群聊")
-        if not self._controller_allowed(event, sender_id=sender_id):
-            return VideoSliceResult("rejected", "无权执行 parserclip slice")
         if command.nonce in self._completed_nonces:
             return VideoSliceResult("duplicate", "parserclip slice 已处理，忽略重复请求")
+        if not self._consume_rate_limit():
+            return VideoSliceResult("rate_limited", "parserclip slice 失败: rate_limited 每小时最多30次")
         entry, reason = self.cache_index.resolve(
             group_id=group_id,
             source=command.source,
@@ -301,25 +304,15 @@ class VideoSliceCommandService:
         self._completed_nonces.add(command.nonce)
         return VideoSliceResult("ok", "", sent=True, cache_id=entry.cache_id, output_name=output_path.name)
 
-    def _controller_allowed(self, event: Any, *, sender_id: str) -> bool:
-        is_admin = getattr(event, "is_admin", None)
-        if callable(is_admin):
-            try:
-                if bool(is_admin()):
-                    return True
-            except Exception:
-                pass
-        controllers = _configured_controller_ids(self.cfg)
-        is_admin_user = getattr(self.cfg, "is_admin_user", None)
-        if callable(is_admin_user):
-            try:
-                if is_admin_user(sender_id):
-                    return True
-            except Exception:
-                pass
-        admins = {str(item).strip() for item in getattr(self.cfg, "admins_id", []) if str(item).strip()}
-        self_id = str(event.get_self_id() or "").strip()
-        return bool(sender_id and (sender_id in controllers or sender_id in admins or sender_id == self_id))
+    def _consume_rate_limit(self) -> bool:
+        now = time.time()
+        if now - self._rate_limit_started_at >= self._rate_limit_window_sec:
+            self._rate_limit_started_at = now
+            self._rate_limit_count = 0
+        if self._rate_limit_count >= self._rate_limit_max:
+            return False
+        self._rate_limit_count += 1
+        return True
 
     async def _probe_video(self, path: Path) -> dict[str, Any]:
         timeout = _positive_int(
@@ -419,7 +412,7 @@ def parse_parserclip_slice_command(text: str) -> VideoSliceCommand | None:
     cache_id = _clean_token(opts.get("cache-id") or opts.get("cache_id"), max_len=64)
     if source not in {"reply", "current", "latest"} or start is None or duration is None:
         return None
-    if start < 0 or duration <= 0 or not requester or not nonce:
+    if start < 0 or duration <= 0 or not nonce:
         return None
     return VideoSliceCommand(
         source=source,
