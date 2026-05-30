@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from core.clean import CacheCleaner
 from core.data import ParseResult, VideoContent
 from core.video_slice import (
     VideoSliceCacheIndex,
@@ -121,6 +122,48 @@ def test_cache_index_persists_and_reply_singleton_fallback(tmp_path: Path) -> No
     assert resolved.path == source
     assert no_reply_reason == ""
     assert no_reply_resolved == resolved
+
+
+def test_cache_index_prunes_missing_and_old_entries(tmp_path: Path) -> None:
+    persist_path = tmp_path / "video_slice_index.json"
+    keep = _video(tmp_path, "keep.mp4")
+    missing = _video(tmp_path, "missing.mp4")
+    old = _video(tmp_path, "old.mp4")
+    cache = VideoSliceCacheIndex(persist_path=persist_path)
+    cache.record(group_id="g1", path=keep, created_at=30)
+    cache.record(group_id="g1", path=missing, created_at=40)
+    cache.record(group_id="g1", path=old, created_at=10)
+    missing.unlink()
+
+    removed = cache.prune(older_than=20)
+    reloaded = VideoSliceCacheIndex(persist_path=persist_path)
+
+    assert removed == 2
+    assert reloaded.resolve(group_id="g1", source="current")[0].path == keep
+
+
+def test_cache_cleaner_prunes_video_slice_index(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    persist_path = tmp_path / "video_slice_index.json"
+    video = cache_dir / "video.mp4"
+    video.write_bytes(b"video")
+    index = VideoSliceCacheIndex(persist_path=persist_path)
+    index.record(group_id="g1", path=video, created_at=10)
+
+    cfg = SimpleNamespace(
+        cache_dir=cache_dir,
+        clean_cron="30 2 * * *",
+        timezone="UTC",
+        ensure_dir=lambda path: Path(path).mkdir(parents=True, exist_ok=True) or Path(path),
+    )
+    cleaner = CacheCleaner(cfg, video_slice_cache=index, start_scheduler=False)
+    asyncio.run(cleaner._clean_plugin_cache())
+    asyncio.run(cleaner.stop())
+
+    assert cache_dir.is_dir()
+    assert not video.exists()
+    assert json.loads(persist_path.read_text(encoding="utf-8"))["entries"] == []
 
 
 def test_controller_allowlist_and_group_guard(tmp_path: Path) -> None:

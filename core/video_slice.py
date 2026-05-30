@@ -161,6 +161,24 @@ class VideoSliceCacheIndex:
         except Exception as exc:
             logger.warning(f"[parserclip] cache index persist failed: {exc.__class__.__name__}")
 
+    def prune(self, *, older_than: float | None = None) -> int:
+        removed = 0
+        next_groups: dict[str, deque[VideoSliceCacheEntry]] = {}
+        for group, bucket in self._by_group.items():
+            kept: deque[VideoSliceCacheEntry] = deque(maxlen=self.max_entries_per_group)
+            for entry in bucket:
+                is_old = older_than is not None and entry.created_at <= older_than
+                if is_old or not entry.path.is_file():
+                    removed += 1
+                    continue
+                kept.append(entry)
+            if kept:
+                next_groups[group] = kept
+        if removed:
+            self._by_group = next_groups
+            self._persist()
+        return removed
+
     def resolve(
         self,
         *,

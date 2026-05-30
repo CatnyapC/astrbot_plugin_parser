@@ -53,7 +53,7 @@ class ParserPlugin(Star):
             cache_index=self.video_slice_cache,
         )
         # 缓存清理器
-        self.cleaner = CacheCleaner(self.cfg)
+        self.cleaner = CacheCleaner(self.cfg, video_slice_cache=self.video_slice_cache)
         # 关键词 -> Parser 映射
         self.parser_map: dict[str, BaseParser] = {}
         # 关键词 -> 正则 列表

@@ -1,5 +1,7 @@
 import asyncio
 import shutil
+import time
+from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -16,10 +18,18 @@ class CacheCleaner:
 
     JOBNAME = "CacheCleaner"
 
-    def __init__(self, config: PluginConfig):
+    def __init__(
+        self,
+        config: PluginConfig,
+        *,
+        video_slice_cache: Any | None = None,
+        start_scheduler: bool = True,
+    ):
         self.cfg = config
+        self.video_slice_cache = video_slice_cache
         self.scheduler = AsyncIOScheduler(timezone=self.cfg.timezone)
-        self.scheduler.start()
+        if start_scheduler:
+            self.scheduler.start()
 
         self.register_task()
 
@@ -44,6 +54,9 @@ class CacheCleaner:
             cache_dir = self.cfg.ensure_dir(self.cfg.cache_dir)
             await loop.run_in_executor(None, shutil.rmtree, cache_dir)
             self.cfg.ensure_dir(self.cfg.cache_dir)
+            if self.video_slice_cache is not None:
+                removed = self.video_slice_cache.prune(older_than=time.time())
+                logger.info(f"Video slice cache index pruned: removed={removed}")
             logger.info("Cache directory cleaned and recreated.")
         except Exception:
             logger.exception("Error while cleaning cache directory.")
