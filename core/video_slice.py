@@ -43,7 +43,6 @@ class VideoSliceCommand:
     requester_id: str
     nonce: str
     cache_id: str = ""
-    reply_raw_id: str = ""
 
 
 @dataclass(slots=True)
@@ -256,7 +255,7 @@ class VideoSliceCommandService:
         group_id = str(event.get_group_id() or "").strip()
         if not group_id:
             return VideoSliceResult("rejected", "parserclip slice 仅支持群聊")
-        reply_raw_id = _reply_raw_id(event) or command.reply_raw_id
+        reply_raw_id = _reply_raw_id(event)
         entry, reason = self.cache_index.resolve(
             group_id=group_id,
             source=command.source,
@@ -443,15 +442,6 @@ def parse_parserclip_slice_command(text: str) -> VideoSliceCommand | None:
     requester = _clean_token(opts.get("requester"), max_len=64)
     nonce = _clean_token(opts.get("nonce"), max_len=80)
     cache_id = _clean_token(opts.get("cache-id") or opts.get("cache_id"), max_len=64)
-    source_ref_kind, source_ref_value = _parse_source_ref(opts.get("source-ref") or opts.get("source_ref"))
-    if not source and source_ref_kind:
-        source = source_ref_kind
-    if source_ref_kind and source_ref_kind != source:
-        return None
-    reply_raw_id = _clean_token(
-        opts.get("reply-raw-id") or opts.get("reply_raw_id") or source_ref_value,
-        max_len=80,
-    )
     if source not in {"reply", "current", "latest"} or start is None or duration is None:
         return None
     if start < 0 or duration <= 0:
@@ -463,7 +453,6 @@ def parse_parserclip_slice_command(text: str) -> VideoSliceCommand | None:
         requester_id=requester,
         nonce=nonce,
         cache_id=cache_id,
-        reply_raw_id=reply_raw_id,
     )
 
 
@@ -485,19 +474,6 @@ def _parse_options(parts: list[str]) -> dict[str, str]:
         out[key.strip()] = value.strip()
         idx += 1
     return out
-
-
-def _parse_source_ref(value: Any) -> tuple[str, str]:
-    text = str(value or "").strip()
-    if not text:
-        return "", ""
-    kind, sep, raw_id = text.partition(":")
-    if not sep:
-        return "", ""
-    kind = kind.strip().lower()
-    if kind != "reply":
-        return "", ""
-    return kind, raw_id.strip()
 
 
 def _ffmpeg_slice_command(

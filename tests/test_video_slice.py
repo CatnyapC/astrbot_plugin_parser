@@ -109,21 +109,6 @@ def test_parse_parserclip_slice_command_accepts_missing_legacy_nonce() -> None:
     assert parsed.nonce == ""
 
 
-def test_parse_parserclip_slice_command_accepts_safe_reply_refs() -> None:
-    direct = parse_parserclip_slice_command(
-        "/parserclip slice --source reply --reply-raw-id 1280 --start 1 --duration 10"
-    )
-    typed = parse_parserclip_slice_command(
-        "/parserclip slice --source-ref reply:1281 --start 1 --duration 10"
-    )
-
-    assert direct is not None
-    assert direct.reply_raw_id == "1280"
-    assert typed is not None
-    assert typed.source == "reply"
-    assert typed.reply_raw_id == "1281"
-
-
 def test_cache_source_resolver_reply_current_latest_and_ambiguous(tmp_path: Path) -> None:
     cache = VideoSliceCacheIndex()
     first = cache.record(group_id="g1", path=_video(tmp_path, "a.mp4"), source_raw_id="r1")
@@ -239,111 +224,6 @@ def test_ordinary_non_admin_can_execute_slice(tmp_path: Path) -> None:
     assert result.status == "ok"
     assert result.sent is True
     assert len(sender.results) == 1
-
-
-def test_explicit_reply_ref_resolves_correct_cache_entry(tmp_path: Path) -> None:
-    original = _video(tmp_path, "original.mp4")
-    prior_slice = _video(tmp_path, "prior_slice.mp4")
-    cache = VideoSliceCacheIndex()
-    original_entry = cache.record(group_id="g1", path=original, sent_raw_id="tg-video-1", duration=20)
-    cache.record(group_id="g1", path=prior_slice, sent_raw_id="tg-slice-1", duration=7)
-    sender = DummySender()
-
-    async def run_process(cmd: list[str], _timeout: float) -> tuple[int, str, str]:
-        if cmd[0] == "ffprobe":
-            return 0, json.dumps({"streams": [{"codec_type": "video"}], "format": {"duration": "20.0"}}), ""
-        assert cmd[cmd.index("-i") + 1] == str(original)
-        Path(cmd[-1]).write_bytes(b"clip")
-        return 0, "", ""
-
-    service = VideoSliceCommandService(
-        cfg=_cfg(tmp_path),
-        sender=sender,
-        cache_index=cache,
-        run_process=run_process,
-        platform_system=lambda: "Linux",
-    )
-
-    result = asyncio.run(
-        service.handle(
-            DummyEvent(
-                text="/parserclip slice --source reply --reply-raw-id tg-video-1 --start 1 --duration 10",
-                raw={"message_id": "cmd1"},
-                sender_id="router-bot",
-            )
-        )
-    )
-
-    assert result.status == "ok"
-    assert original_entry is not None
-    assert result.cache_id == original_entry.cache_id
-    assert len(sender.results) == 1
-
-
-def test_event_reply_metadata_takes_priority_over_explicit_ref(tmp_path: Path) -> None:
-    event_reply_video = _video(tmp_path, "event_reply.mp4")
-    explicit_reply_video = _video(tmp_path, "explicit_reply.mp4")
-    cache = VideoSliceCacheIndex()
-    event_entry = cache.record(group_id="g1", path=event_reply_video, sent_raw_id="event-ref", duration=20)
-    cache.record(group_id="g1", path=explicit_reply_video, sent_raw_id="explicit-ref", duration=20)
-
-    async def run_process(cmd: list[str], _timeout: float) -> tuple[int, str, str]:
-        if cmd[0] == "ffprobe":
-            return 0, json.dumps({"streams": [{"codec_type": "video"}], "format": {"duration": "20.0"}}), ""
-        assert cmd[cmd.index("-i") + 1] == str(event_reply_video)
-        Path(cmd[-1]).write_bytes(b"clip")
-        return 0, "", ""
-
-    service = VideoSliceCommandService(
-        cfg=_cfg(tmp_path),
-        sender=DummySender(),
-        cache_index=cache,
-        run_process=run_process,
-        platform_system=lambda: "Linux",
-    )
-
-    result = asyncio.run(
-        service.handle(
-            DummyEvent(
-                text="/parserclip slice --source reply --reply-raw-id explicit-ref --start 1 --duration 10",
-                raw={"message_id": "cmd1", "reply_to_message_id": "event-ref"},
-                sender_id="router-bot",
-            )
-        )
-    )
-
-    assert result.status == "ok"
-    assert event_entry is not None
-    assert result.cache_id == event_entry.cache_id
-
-
-def test_missing_reply_ref_still_requires_reply_without_path_leak(tmp_path: Path) -> None:
-    first = _video(tmp_path, "first.mp4")
-    second = _video(tmp_path, "second.mp4")
-    cache = VideoSliceCacheIndex()
-    cache.record(group_id="g1", path=first, sent_raw_id="first-ref", duration=20)
-    cache.record(group_id="g1", path=second, sent_raw_id="second-ref", duration=20)
-    service = VideoSliceCommandService(
-        cfg=_cfg(tmp_path),
-        sender=DummySender(),
-        cache_index=cache,
-        run_process=lambda *_: _ok_probe(),
-    )
-
-    result = asyncio.run(
-        service.handle(
-            DummyEvent(
-                text="/parserclip slice --source reply --start 1 --duration 10",
-                raw={"message_id": "cmd1"},
-                sender_id="router-bot",
-            )
-        )
-    )
-
-    assert result.status == "failed"
-    assert result.message == "parserclip slice 失败: reply_required"
-    assert str(first) not in result.message
-    assert str(second) not in result.message
 
 
 def test_slice_uses_ffprobe_ffmpeg_fallback_and_sender_path(tmp_path: Path) -> None:
