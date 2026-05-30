@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import mimetypes
 import platform
 import re
 import shlex
@@ -52,6 +53,18 @@ class VideoSliceResult:
     sent: bool = False
     cache_id: str = ""
     output_name: str = ""
+
+
+@dataclass(slots=True)
+class TelegramReplyVideoMedia:
+    file_id: str
+    file_unique_id: str
+    file_size: int | None
+    duration: float
+    mime_type: str
+    file_name: str
+    message_id: str
+    kind: str
 
 
 class VideoSliceCacheIndex:
@@ -215,8 +228,6 @@ class VideoSliceCacheIndex:
                 return matches[0], ""
             if len(matches) > 1:
                 return None, "source_ambiguous"
-            if len(bucket) == 1:
-                return bucket[0], ""
             return None, "reply_source_not_found"
         if normalized_source == "current":
             return bucket[-1], ""
@@ -263,7 +274,15 @@ class VideoSliceCommandService:
             cache_id=command.cache_id,
         )
         if entry is None:
-            return VideoSliceResult("failed", f"parserclip slice 失败: {reason}")
+            if command.source == "reply" and reply_raw_id and not command.cache_id:
+                entry, reason = await self._cache_replied_telegram_video(
+                    event=event,
+                    group_id=group_id,
+                    reply_raw_id=reply_raw_id,
+                    resolve_reason=reason,
+                )
+            if entry is None:
+                return VideoSliceResult("failed", f"parserclip slice 失败: {reason}")
         idem_key = self._idempotency_key(
             event=event,
             group_id=group_id,
@@ -311,6 +330,89 @@ class VideoSliceCommandService:
             return VideoSliceResult("failed", "parserclip slice 发送失败")
         self._completed_keys.add(idem_key)
         return VideoSliceResult("ok", "", sent=True, cache_id=entry.cache_id, output_name=output_path.name)
+
+    async def _cache_replied_telegram_video(
+        self,
+        *,
+        event: Any,
+        group_id: str,
+        reply_raw_id: str,
+        resolve_reason: str,
+    ) -> tuple[VideoSliceCacheEntry | None, str]:
+        if resolve_reason not in {"cache_empty", "reply_source_not_found"}:
+            return None, resolve_reason
+        reply_message = _telegram_reply_message(event)
+        if reply_message is None:
+            return None, resolve_reason
+        media, reason = _telegram_reply_video_media(reply_message)
+        if media is None:
+            return None, reason
+        if not media.file_id:
+            return None, "reply_media_not_found"
+        if not self._allow_direct_reply_media(event=event, media=media):
+            return None, "reply_media_policy_blocked"
+        max_size = int(getattr(self.cfg, "max_size", 0) or 0)
+        if media.file_size is None:
+            return None, "reply_media_size_unknown"
+        if max_size > 0 and media.file_size > max_size:
+            return None, "reply_media_too_large"
+        cache_root = Path(getattr(self.cfg, "cache_dir", "") or ".").resolve(strict=False)
+        if not cache_root.is_dir():
+            cache_root.mkdir(parents=True, exist_ok=True)
+        suffix = _safe_media_suffix(media.file_name, media.mime_type)
+        safe_name = _clean_token(
+            f"telegram_{media.message_id}_{media.file_unique_id}",
+            max_len=96,
+        ) or hashlib.blake2b(str(time.time()).encode(), digest_size=8).hexdigest()
+        target_path = cache_root / f"{safe_name}{suffix}"
+        tmp_path = cache_root / f".{safe_name}{suffix}.part"
+        try:
+            await self._download_telegram_file(event, media.file_id, tmp_path)
+            if not tmp_path.is_file() or tmp_path.stat().st_size <= 0:
+                return None, "reply_media_download_failed"
+            if max_size > 0 and tmp_path.stat().st_size > max_size:
+                return None, "reply_media_too_large"
+            tmp_path.replace(target_path)
+        except Exception:
+            return None, "reply_media_download_failed"
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        entry = self.cache_index.record(
+            group_id=group_id,
+            path=target_path,
+            duration=media.duration,
+            source_raw_id=reply_raw_id,
+            source_key=f"telegram:{media.file_unique_id}" if media.file_unique_id else "",
+        )
+        if entry is None:
+            try:
+                target_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return None, "reply_media_download_failed"
+        return entry, ""
+
+    async def _download_telegram_file(self, event: Any, file_id: str, target_path: Path) -> None:
+        timeout = _positive_int(
+            getattr(self.cfg, "parser_video_slice_timeout_sec", None),
+            default=VIDEO_SLICE_DEFAULT_TIMEOUT_SEC,
+        )
+        client = getattr(event, "client", None)
+        if client is None or not callable(getattr(client, "get_file", None)):
+            raise RuntimeError("telegram_client_unavailable")
+        tg_file = await asyncio.wait_for(client.get_file(file_id), timeout=float(timeout))
+        downloader = getattr(tg_file, "download_to_drive", None)
+        if not callable(downloader):
+            raise RuntimeError("telegram_download_unavailable")
+        await asyncio.wait_for(downloader(custom_path=target_path), timeout=float(timeout))
+
+    def _allow_direct_reply_media(self, *, event: Any, media: TelegramReplyVideoMedia) -> bool:
+        """Policy hook for future same-group uploaded-media scanners."""
+        _ = (event, media)
+        return True
 
     def _idempotency_key(
         self,
@@ -528,7 +630,65 @@ def _reply_raw_id(event: Any) -> str:
         match = re.search(r"\[CQ:reply,id=([^\],]+)", raw_text)
         if match:
             return match.group(1).strip()
+    reply_message = _telegram_reply_message(event)
+    value = str(getattr(reply_message, "message_id", "") or "").strip()
+    if value:
+        return value
+    try:
+        chain = list(event.get_messages() or [])
+    except Exception:
+        chain = []
+    for item in chain:
+        if str(getattr(item, "type", "")).lower().endswith("reply") or item.__class__.__name__ == "Reply":
+            value = str(getattr(item, "id", "") or "").strip()
+            if value:
+                return value
     return ""
+
+
+def _telegram_reply_message(event: Any) -> Any | None:
+    raw_obj = getattr(getattr(event, "message_obj", None), "raw_message", None)
+    message = getattr(raw_obj, "message", None)
+    return getattr(message, "reply_to_message", None)
+
+
+def _telegram_reply_video_media(reply_message: Any) -> tuple[TelegramReplyVideoMedia | None, str]:
+    video = getattr(reply_message, "video", None)
+    if video is not None:
+        return _telegram_media_from_obj(video, reply_message=reply_message, kind="video"), ""
+    document = getattr(reply_message, "document", None)
+    if document is not None:
+        mime_type = str(getattr(document, "mime_type", "") or "")
+        if mime_type.startswith("video/"):
+            return _telegram_media_from_obj(document, reply_message=reply_message, kind="document"), ""
+        return None, "reply_media_unsupported"
+    for attr in ("photo", "sticker", "animation", "video_note", "voice", "audio"):
+        if getattr(reply_message, attr, None) is not None:
+            return None, "reply_media_unsupported"
+    return None, "reply_media_not_found"
+
+
+def _telegram_media_from_obj(media_obj: Any, *, reply_message: Any, kind: str) -> TelegramReplyVideoMedia:
+    return TelegramReplyVideoMedia(
+        file_id=str(getattr(media_obj, "file_id", "") or "").strip(),
+        file_unique_id=str(getattr(media_obj, "file_unique_id", "") or "").strip(),
+        file_size=_optional_positive_int(getattr(media_obj, "file_size", None)),
+        duration=max(0.0, _float_or_zero(getattr(media_obj, "duration", 0.0))),
+        mime_type=str(getattr(media_obj, "mime_type", "") or "").strip(),
+        file_name=str(getattr(media_obj, "file_name", "") or "").strip(),
+        message_id=str(getattr(reply_message, "message_id", "") or "").strip(),
+        kind=kind,
+    )
+
+
+def _safe_media_suffix(file_name: str, mime_type: str) -> str:
+    suffix = Path(str(file_name or "")).suffix.lower()
+    if suffix and re.fullmatch(r"\.[a-z0-9]{1,8}", suffix):
+        return suffix
+    guessed = mimetypes.guess_extension(str(mime_type or "").split(";", 1)[0].strip())
+    if guessed and re.fullmatch(r"\.[a-z0-9]{1,8}", guessed.lower()):
+        return guessed.lower()
+    return ".mp4"
 
 
 def _event_raw_id(event: Any) -> str:
@@ -590,6 +750,13 @@ def _parse_int(value: Any) -> int | None:
 def _positive_int(value: Any, *, default: int) -> int:
     parsed = _parse_int(value)
     return max(1, parsed if parsed is not None else int(default))
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    parsed = _parse_int(value)
+    if parsed is None or parsed <= 0:
+        return None
+    return parsed
 
 
 def _float_or_zero(value: Any) -> float:
