@@ -24,12 +24,14 @@ class DummyEvent:
         group_id: str = "g1",
         sender_id: str = "bot1",
         self_id: str = "bot1",
+        is_admin: bool = False,
         raw: dict | None = None,
     ) -> None:
         self.message_str = text
         self._group_id = group_id
         self._sender_id = sender_id
         self._self_id = self_id
+        self._is_admin = is_admin
         self.message_obj = SimpleNamespace(raw_message=raw or {"message_id": "src1", "reply_to_message_id": "src-video"})
 
     def get_group_id(self) -> str:
@@ -40,6 +42,9 @@ class DummyEvent:
 
     def get_self_id(self) -> str:
         return self._self_id
+
+    def is_admin(self) -> bool:
+        return self._is_admin
 
 
 class DummySender:
@@ -111,6 +116,10 @@ def test_controller_allowlist_and_group_guard(tmp_path: Path) -> None:
     rejected = asyncio.run(service.handle(DummyEvent(sender_id="ordinary", self_id="bot1")))
     assert rejected.status == "rejected"
     assert "无权" in rejected.message
+
+    allowed_admin = asyncio.run(service.handle(DummyEvent(sender_id="group-admin", self_id="bot1", is_admin=True)))
+    assert allowed_admin.status != "rejected"
+    assert "无权" not in allowed_admin.message
 
     private = asyncio.run(service.handle(DummyEvent(group_id="", sender_id="bot1", self_id="bot1")))
     assert private.status == "rejected"

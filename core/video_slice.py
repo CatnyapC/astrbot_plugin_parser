@@ -209,7 +209,21 @@ class VideoSliceCommandService:
         return VideoSliceResult("ok", "", sent=True, cache_id=entry.cache_id, output_name=output_path.name)
 
     def _controller_allowed(self, event: Any, *, sender_id: str) -> bool:
+        is_admin = getattr(event, "is_admin", None)
+        if callable(is_admin):
+            try:
+                if bool(is_admin()):
+                    return True
+            except Exception:
+                pass
         controllers = _configured_controller_ids(self.cfg)
+        is_admin_user = getattr(self.cfg, "is_admin_user", None)
+        if callable(is_admin_user):
+            try:
+                if is_admin_user(sender_id):
+                    return True
+            except Exception:
+                pass
         admins = {str(item).strip() for item in getattr(self.cfg, "admins_id", []) if str(item).strip()}
         self_id = str(event.get_self_id() or "").strip()
         return bool(sender_id and (sender_id in controllers or sender_id in admins or sender_id == self_id))
