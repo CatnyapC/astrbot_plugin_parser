@@ -37,7 +37,9 @@ class ParserPlugin(Star):
         self.debouncer = Debouncer(self.cfg)
         # 仲裁器
         self.arbiter = EmojiLikeArbiter()
-        self.video_slice_cache = VideoSliceCacheIndex()
+        self.video_slice_cache = VideoSliceCacheIndex(
+            persist_path=self.cfg.data_dir / "video_slice_index.json"
+        )
         # 消息发送器
         self.sender = MessageSender(
             self.cfg,

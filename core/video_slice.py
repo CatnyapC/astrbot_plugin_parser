@@ -55,9 +55,16 @@ class VideoSliceResult:
 
 
 class VideoSliceCacheIndex:
-    def __init__(self, *, max_entries_per_group: int = 20) -> None:
+    def __init__(
+        self,
+        *,
+        max_entries_per_group: int = 20,
+        persist_path: Path | None = None,
+    ) -> None:
         self.max_entries_per_group = max(1, int(max_entries_per_group or 20))
+        self.persist_path = Path(persist_path) if persist_path else None
         self._by_group: dict[str, deque[VideoSliceCacheEntry]] = {}
+        self._load()
 
     def record(
         self,
@@ -86,9 +93,73 @@ class VideoSliceCacheIndex:
             source_key=str(source_key or "").strip(),
             created_at=float(created_at if created_at is not None else time.time()),
         )
-        bucket = self._by_group.setdefault(group, deque(maxlen=self.max_entries_per_group))
-        bucket.append(entry)
+        self._append(entry)
+        self._persist()
         return entry
+
+    def _append(self, entry: VideoSliceCacheEntry) -> None:
+        bucket = self._by_group.setdefault(entry.group_id, deque(maxlen=self.max_entries_per_group))
+        bucket.append(entry)
+
+    def _load(self) -> None:
+        if self.persist_path is None or not self.persist_path.is_file():
+            return
+        try:
+            payload = json.loads(self.persist_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning(f"[parserclip] cache index load failed: {exc.__class__.__name__}")
+            return
+        entries = payload.get("entries") if isinstance(payload, dict) else payload
+        if not isinstance(entries, list):
+            return
+        loaded: list[VideoSliceCacheEntry] = []
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            group = str(item.get("group_id") or "").strip()
+            path = Path(str(item.get("path") or ""))
+            if not group or not path.is_file():
+                continue
+            loaded.append(
+                VideoSliceCacheEntry(
+                    cache_id=str(item.get("cache_id") or _cache_id(group_id=group, path=path, source_key=str(item.get("source_key") or ""))),
+                    group_id=group,
+                    path=path,
+                    duration=max(0.0, _float_or_zero(item.get("duration"))),
+                    source_raw_id=str(item.get("source_raw_id") or "").strip(),
+                    sent_raw_id=str(item.get("sent_raw_id") or "").strip(),
+                    source_key=str(item.get("source_key") or "").strip(),
+                    created_at=_float_or_zero(item.get("created_at")),
+                )
+            )
+        for entry in sorted(loaded, key=lambda item: item.created_at):
+            self._append(entry)
+
+    def _persist(self) -> None:
+        if self.persist_path is None:
+            return
+        entries = []
+        for bucket in self._by_group.values():
+            for entry in bucket:
+                entries.append(
+                    {
+                        "cache_id": entry.cache_id,
+                        "group_id": entry.group_id,
+                        "path": str(entry.path),
+                        "duration": entry.duration,
+                        "source_raw_id": entry.source_raw_id,
+                        "sent_raw_id": entry.sent_raw_id,
+                        "source_key": entry.source_key,
+                        "created_at": entry.created_at,
+                    }
+                )
+        try:
+            self.persist_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.persist_path.with_suffix(self.persist_path.suffix + ".tmp")
+            tmp.write_text(json.dumps({"entries": entries}, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(self.persist_path)
+        except Exception as exc:
+            logger.warning(f"[parserclip] cache index persist failed: {exc.__class__.__name__}")
 
     def resolve(
         self,
@@ -114,6 +185,8 @@ class VideoSliceCacheIndex:
         if normalized_source == "reply":
             reply = str(reply_raw_id or "").strip()
             if not reply:
+                if len(bucket) == 1:
+                    return bucket[0], ""
                 return None, "reply_required"
             matches = [
                 entry
@@ -124,6 +197,8 @@ class VideoSliceCacheIndex:
                 return matches[0], ""
             if len(matches) > 1:
                 return None, "source_ambiguous"
+            if len(bucket) == 1:
+                return bucket[0], ""
             return None, "reply_source_not_found"
         if normalized_source == "current":
             return bucket[-1], ""
@@ -472,6 +547,13 @@ def _parse_int(value: Any) -> int | None:
 def _positive_int(value: Any, *, default: int) -> int:
     parsed = _parse_int(value)
     return max(1, parsed if parsed is not None else int(default))
+
+
+def _float_or_zero(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except Exception:
+        return 0.0
 
 
 def _cache_id(*, group_id: str, path: Path, source_key: str = "") -> str:

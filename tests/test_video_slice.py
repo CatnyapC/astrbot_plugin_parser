@@ -105,6 +105,24 @@ def test_cache_source_resolver_reply_current_latest_and_ambiguous(tmp_path: Path
     assert cache.resolve(group_id="g2", source="current")[1] == "cache_empty"
 
 
+def test_cache_index_persists_and_reply_singleton_fallback(tmp_path: Path) -> None:
+    persist_path = tmp_path / "video_slice_index.json"
+    source = _video(tmp_path, "persisted.mp4")
+    cache = VideoSliceCacheIndex(persist_path=persist_path)
+    entry = cache.record(group_id="g1", path=source, source_raw_id="source-msg", duration=12)
+
+    assert entry is not None
+    reloaded = VideoSliceCacheIndex(persist_path=persist_path)
+    resolved, reason = reloaded.resolve(group_id="g1", source="reply", reply_raw_id="parser-sent-msg")
+    no_reply_resolved, no_reply_reason = reloaded.resolve(group_id="g1", source="reply")
+
+    assert reason == ""
+    assert resolved is not None
+    assert resolved.path == source
+    assert no_reply_reason == ""
+    assert no_reply_resolved == resolved
+
+
 def test_controller_allowlist_and_group_guard(tmp_path: Path) -> None:
     service = VideoSliceCommandService(
         cfg=_cfg(tmp_path),
