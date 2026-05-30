@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -220,6 +221,81 @@ def test_cache_index_persists_and_reply_singleton_fallback(tmp_path: Path) -> No
     assert mismatch_reason == "reply_source_not_found"
     assert no_reply_reason == ""
     assert no_reply_resolved == resolved
+
+
+def test_reply_unmatched_uses_unique_recent_parser_sent_output(tmp_path: Path) -> None:
+    cache = VideoSliceCacheIndex()
+    source = cache.record(
+        group_id="g1",
+        path=_video(tmp_path, "ordinary-source.mp4"),
+        source_raw_id="source-msg",
+        created_at=time.time() - 20,
+    )
+    output = cache.record(
+        group_id="g1",
+        path=_video(tmp_path, "parserclip_recent.mp4"),
+        source_raw_id="command-msg",
+        parser_sent_output=True,
+        created_at=time.time() - 10,
+    )
+
+    resolved, reason = cache.resolve(group_id="g1", source="reply", reply_raw_id="parser-sent-msg")
+
+    assert source is not None
+    assert output is not None
+    assert reason == ""
+    assert resolved == output
+
+
+def test_reply_unmatched_multiple_recent_parser_sent_outputs_are_ambiguous(tmp_path: Path) -> None:
+    cache = VideoSliceCacheIndex()
+    cache.record(
+        group_id="g1",
+        path=_video(tmp_path, "parserclip_first.mp4"),
+        parser_sent_output=True,
+        created_at=time.time() - 20,
+    )
+    cache.record(
+        group_id="g1",
+        path=_video(tmp_path, "parserclip_second.mp4"),
+        parser_sent_output=True,
+        created_at=time.time() - 10,
+    )
+
+    resolved, reason = cache.resolve(group_id="g1", source="reply", reply_raw_id="parser-sent-msg")
+
+    assert resolved is None
+    assert reason == "reply_source_ambiguous"
+
+
+def test_reply_unmatched_old_parser_sent_output_is_rejected(tmp_path: Path) -> None:
+    cache = VideoSliceCacheIndex()
+    cache.record(
+        group_id="g1",
+        path=_video(tmp_path, "parserclip_old.mp4"),
+        parser_sent_output=True,
+        created_at=time.time() - 31 * 60,
+    )
+
+    resolved, reason = cache.resolve(group_id="g1", source="reply", reply_raw_id="parser-sent-msg")
+
+    assert resolved is None
+    assert reason == "reply_source_not_found"
+
+
+def test_reply_unmatched_ordinary_source_entry_is_not_selected(tmp_path: Path) -> None:
+    cache = VideoSliceCacheIndex()
+    cache.record(
+        group_id="g1",
+        path=_video(tmp_path, "BV1ordinary.mp4"),
+        source_raw_id="source-msg",
+        created_at=time.time() - 10,
+    )
+
+    resolved, reason = cache.resolve(group_id="g1", source="reply", reply_raw_id="parser-sent-msg")
+
+    assert resolved is None
+    assert reason == "reply_source_not_found"
 
 
 def test_cache_index_prunes_missing_and_old_entries(tmp_path: Path) -> None:

@@ -22,6 +22,7 @@ VIDEO_SLICE_PLATFORM = Platform(name="parserclip", display_name="Parser Clip")
 VIDEO_SLICE_DEFAULT_MAX_DURATION_SEC = 60
 VIDEO_SLICE_DEFAULT_TIMEOUT_SEC = 120
 VIDEO_SLICE_DEFAULT_BITRATE = "2500k"
+VIDEO_SLICE_REPLY_FALLBACK_WINDOW_SEC = 30 * 60
 
 
 @dataclass(slots=True)
@@ -33,6 +34,7 @@ class VideoSliceCacheEntry:
     source_raw_id: str = ""
     sent_raw_id: str = ""
     source_key: str = ""
+    parser_sent_output: bool = False
     created_at: float = 0.0
 
 
@@ -88,6 +90,7 @@ class VideoSliceCacheIndex:
         source_raw_id: str = "",
         sent_raw_id: str = "",
         source_key: str = "",
+        parser_sent_output: bool = False,
         created_at: float | None = None,
     ) -> VideoSliceCacheEntry | None:
         group = str(group_id or "").strip()
@@ -104,6 +107,7 @@ class VideoSliceCacheIndex:
             source_raw_id=str(source_raw_id or "").strip(),
             sent_raw_id=str(sent_raw_id or "").strip(),
             source_key=str(source_key or "").strip(),
+            parser_sent_output=bool(parser_sent_output),
             created_at=float(created_at if created_at is not None else time.time()),
         )
         self._append(entry)
@@ -142,6 +146,7 @@ class VideoSliceCacheIndex:
                     source_raw_id=str(item.get("source_raw_id") or "").strip(),
                     sent_raw_id=str(item.get("sent_raw_id") or "").strip(),
                     source_key=str(item.get("source_key") or "").strip(),
+                    parser_sent_output=bool(item.get("parser_sent_output")),
                     created_at=_float_or_zero(item.get("created_at")),
                 )
             )
@@ -163,6 +168,7 @@ class VideoSliceCacheIndex:
                         "source_raw_id": entry.source_raw_id,
                         "sent_raw_id": entry.sent_raw_id,
                         "source_key": entry.source_key,
+                        "parser_sent_output": bool(entry.parser_sent_output),
                         "created_at": entry.created_at,
                     }
                 )
@@ -228,6 +234,11 @@ class VideoSliceCacheIndex:
                 return matches[0], ""
             if len(matches) > 1:
                 return None, "source_ambiguous"
+            fallback_matches = self._recent_parser_sent_output_candidates(bucket)
+            if len(fallback_matches) == 1:
+                return fallback_matches[0], ""
+            if len(fallback_matches) > 1:
+                return None, "reply_source_ambiguous"
             return None, "reply_source_not_found"
         if normalized_source == "current":
             return bucket[-1], ""
@@ -236,6 +247,21 @@ class VideoSliceCacheIndex:
                 return bucket[0], ""
             return None, "source_ambiguous"
         return None, "source_invalid"
+
+    @staticmethod
+    def _recent_parser_sent_output_candidates(
+        bucket: list[VideoSliceCacheEntry],
+    ) -> list[VideoSliceCacheEntry]:
+        cutoff = time.time() - VIDEO_SLICE_REPLY_FALLBACK_WINDOW_SEC
+        return [
+            entry
+            for entry in bucket
+            if entry.created_at >= cutoff
+            and (
+                entry.parser_sent_output
+                or entry.path.name.startswith("parserclip_")
+            )
+        ]
 
 
 class VideoSliceCommandService:
@@ -386,6 +412,7 @@ class VideoSliceCommandService:
             duration=media.duration,
             source_raw_id=reply_raw_id,
             source_key=f"telegram:{media.file_unique_id}" if media.file_unique_id else "",
+            parser_sent_output=False,
         )
         if entry is None:
             try:
@@ -798,4 +825,5 @@ async def record_video_slice_cache_from_group(
             duration=float(content.duration or 0.0),
             source_raw_id=source_raw_id,
             source_key=str(content.source_key or ""),
+            parser_sent_output=path.name.startswith("parserclip_"),
         )
