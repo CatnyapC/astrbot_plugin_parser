@@ -242,7 +242,7 @@ class VideoSliceCommandService:
         self.cache_index = cache_index
         self.run_process = run_process or _run_process
         self.platform_system = platform_system or platform.system
-        self._completed_nonces: set[str] = set()
+        self._completed_keys: set[str] = set()
         self._rate_limit_started_at = time.time()
         self._rate_limit_count = 0
         self._rate_limit_window_sec = 3600.0
@@ -255,18 +255,26 @@ class VideoSliceCommandService:
         group_id = str(event.get_group_id() or "").strip()
         if not group_id:
             return VideoSliceResult("rejected", "parserclip slice 仅支持群聊")
-        if command.nonce in self._completed_nonces:
-            return VideoSliceResult("duplicate", "parserclip slice 已处理，忽略重复请求")
-        if not self._consume_rate_limit():
-            return VideoSliceResult("rate_limited", "parserclip slice 失败: rate_limited 每小时最多30次")
+        reply_raw_id = _reply_raw_id(event)
         entry, reason = self.cache_index.resolve(
             group_id=group_id,
             source=command.source,
-            reply_raw_id=_reply_raw_id(event),
+            reply_raw_id=reply_raw_id,
             cache_id=command.cache_id,
         )
         if entry is None:
             return VideoSliceResult("failed", f"parserclip slice 失败: {reason}")
+        idem_key = self._idempotency_key(
+            event=event,
+            group_id=group_id,
+            command=command,
+            entry=entry,
+            reply_raw_id=reply_raw_id,
+        )
+        if idem_key in self._completed_keys:
+            return VideoSliceResult("duplicate", "parserclip slice 已处理，忽略重复请求")
+        if not self._consume_rate_limit():
+            return VideoSliceResult("rate_limited", "parserclip slice 失败: rate_limited 每小时最多30次")
         cache_root = Path(getattr(self.cfg, "cache_dir", "") or ".")
         if not _path_is_under(entry.path, cache_root):
             return VideoSliceResult("failed", "parserclip slice 失败: cache_source_invalid")
@@ -301,8 +309,32 @@ class VideoSliceCommandService:
         )
         if not sent:
             return VideoSliceResult("failed", "parserclip slice 发送失败")
-        self._completed_nonces.add(command.nonce)
+        self._completed_keys.add(idem_key)
         return VideoSliceResult("ok", "", sent=True, cache_id=entry.cache_id, output_name=output_path.name)
+
+    def _idempotency_key(
+        self,
+        *,
+        event: Any,
+        group_id: str,
+        command: VideoSliceCommand,
+        entry: VideoSliceCacheEntry,
+        reply_raw_id: str,
+    ) -> str:
+        h = hashlib.blake2b(digest_size=16)
+        for part in (
+            group_id,
+            str(event.get_sender_id() or "").strip(),
+            command.source,
+            reply_raw_id,
+            entry.cache_id,
+            command.cache_id,
+            command.start_sec,
+            command.duration_sec,
+        ):
+            h.update(str(part or "").encode())
+            h.update(b"|")
+        return h.hexdigest()
 
     def _consume_rate_limit(self) -> bool:
         now = time.time()
@@ -412,7 +444,7 @@ def parse_parserclip_slice_command(text: str) -> VideoSliceCommand | None:
     cache_id = _clean_token(opts.get("cache-id") or opts.get("cache_id"), max_len=64)
     if source not in {"reply", "current", "latest"} or start is None or duration is None:
         return None
-    if start < 0 or duration <= 0 or not nonce:
+    if start < 0 or duration <= 0:
         return None
     return VideoSliceCommand(
         source=source,

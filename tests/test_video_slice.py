@@ -99,6 +99,16 @@ def test_parse_parserclip_slice_command_accepts_missing_legacy_requester() -> No
     assert parsed.nonce == "pvs-g1-123"
 
 
+def test_parse_parserclip_slice_command_accepts_missing_legacy_nonce() -> None:
+    parsed = parse_parserclip_slice_command(
+        "/parserclip slice --source latest --start 90 --duration 10"
+    )
+
+    assert parsed is not None
+    assert parsed.requester_id == ""
+    assert parsed.nonce == ""
+
+
 def test_cache_source_resolver_reply_current_latest_and_ambiguous(tmp_path: Path) -> None:
     cache = VideoSliceCacheIndex()
     first = cache.record(group_id="g1", path=_video(tmp_path, "a.mp4"), source_raw_id="r1")
@@ -251,7 +261,39 @@ def test_slice_uses_ffprobe_ffmpeg_fallback_and_sender_path(tmp_path: Path) -> N
     assert isinstance(sender.results[0].send_groups[0].contents[0], VideoContent)
 
 
-def test_nonce_duplicate_suppresses_second_upload(tmp_path: Path) -> None:
+def test_generated_idempotency_key_suppresses_second_upload(tmp_path: Path) -> None:
+    source = _video(tmp_path)
+    cache = VideoSliceCacheIndex()
+    cache.record(group_id="g1", path=source, source_raw_id="src-video", duration=20)
+    sender = DummySender()
+    commands: list[list[str]] = []
+
+    async def run_process(cmd: list[str], _timeout: float) -> tuple[int, str, str]:
+        commands.append(cmd)
+        if cmd[0] == "ffprobe":
+            return 0, json.dumps({"streams": [{"codec_type": "video"}], "format": {"duration": "20.0"}}), ""
+        Path(cmd[-1]).write_bytes(b"clip")
+        return 0, "", ""
+
+    service = VideoSliceCommandService(
+        cfg=_cfg(tmp_path),
+        sender=sender,
+        cache_index=cache,
+        run_process=run_process,
+        platform_system=lambda: "Linux",
+    )
+
+    first = asyncio.run(service.handle(DummyEvent(sender_id="bot1", self_id="bot1")))
+    second = asyncio.run(service.handle(DummyEvent(sender_id="bot1", self_id="bot1")))
+
+    assert first.status == "ok"
+    assert second.status == "duplicate"
+    assert len(sender.results) == 1
+    assert [cmd[0] for cmd in commands] == ["ffprobe", "ffmpeg"]
+    assert service._rate_limit_count == 1
+
+
+def test_legacy_nonce_command_still_executes(tmp_path: Path) -> None:
     source = _video(tmp_path)
     cache = VideoSliceCacheIndex()
     cache.record(group_id="g1", path=source, source_raw_id="src-video", duration=20)
@@ -271,11 +313,17 @@ def test_nonce_duplicate_suppresses_second_upload(tmp_path: Path) -> None:
         platform_system=lambda: "Linux",
     )
 
-    first = asyncio.run(service.handle(DummyEvent(sender_id="bot1", self_id="bot1")))
-    second = asyncio.run(service.handle(DummyEvent(sender_id="bot1", self_id="bot1")))
+    result = asyncio.run(
+        service.handle(
+            DummyEvent(
+                text="/parserclip slice --source reply --start 2 --duration 3 --requester old --nonce old-nonce",
+                sender_id="ordinary",
+                self_id="bot1",
+            )
+        )
+    )
 
-    assert first.status == "ok"
-    assert second.status == "duplicate"
+    assert result.status == "ok"
     assert len(sender.results) == 1
 
 
@@ -303,7 +351,7 @@ def test_global_rate_limit_rejects_thirty_first_request(tmp_path: Path) -> None:
         result = asyncio.run(
             service.handle(
                 DummyEvent(
-                    text=f"/parserclip slice --source reply --start 2 --duration 3 --nonce n{idx}",
+                    text=f"/parserclip slice --source reply --start 2 --duration {idx + 1}",
                     sender_id="ordinary",
                     self_id="bot1",
                 )
@@ -314,7 +362,7 @@ def test_global_rate_limit_rejects_thirty_first_request(tmp_path: Path) -> None:
     limited = asyncio.run(
         service.handle(
             DummyEvent(
-                text="/parserclip slice --source reply --start 2 --duration 3 --nonce n31",
+                text="/parserclip slice --source reply --start 2 --duration 31",
                 sender_id="ordinary",
                 self_id="bot1",
             )
@@ -334,7 +382,7 @@ def test_global_rate_limit_rejects_thirty_first_request(tmp_path: Path) -> None:
     after_restart = asyncio.run(
         restarted.handle(
             DummyEvent(
-                text="/parserclip slice --source reply --start 2 --duration 3 --nonce n-restart",
+                text="/parserclip slice --source reply --start 2 --duration 31",
                 sender_id="ordinary",
                 self_id="bot1",
             )
