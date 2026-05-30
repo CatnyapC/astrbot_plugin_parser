@@ -29,6 +29,7 @@ class DummyEvent:
         is_admin: bool = False,
         raw: dict | None = None,
         client=None,
+        bot=None,
     ) -> None:
         self.message_str = text
         self._group_id = group_id
@@ -37,6 +38,7 @@ class DummyEvent:
         self._is_admin = is_admin
         self.message_obj = SimpleNamespace(raw_message=raw or {"message_id": "src1", "reply_to_message_id": "src-video"})
         self.client = client
+        self.bot = bot
 
     def get_group_id(self) -> str:
         return self._group_id
@@ -80,6 +82,20 @@ class FakeTelegramClient:
     async def get_file(self, file_id: str) -> FakeTelegramFile:
         self.file_ids.append(file_id)
         return self.file
+
+
+class FakeOneBot:
+    def __init__(self, replies: dict[str, dict]) -> None:
+        self.replies = replies
+        self.actions: list[tuple[str, dict]] = []
+
+    async def call_action(self, action: str, **kwargs):
+        self.actions.append((action, kwargs))
+        if action == "get_msg":
+            return self.replies[str(kwargs["message_id"])]
+        if action == "get_group_file_url":
+            return {"url": f"https://cdn.example.invalid/{kwargs['file_id']}"}
+        raise AssertionError(action)
 
 
 def _tg_reply_raw(reply_message) -> SimpleNamespace:
@@ -562,6 +578,256 @@ def test_uncached_telegram_download_failure_cleans_partial_and_skips_index(tmp_p
     assert cache.resolve(group_id="g1", source="reply", reply_raw_id="1282")[1] == "cache_empty"
     assert not list(tmp_path.glob("*.part"))
     assert not list(tmp_path.glob("telegram_1282*"))
+
+
+def test_uncached_onebot_video_reply_downloads_registers_and_slices(tmp_path: Path) -> None:
+    cache = VideoSliceCacheIndex()
+    sender = DummySender()
+    bot = FakeOneBot(
+        {
+            "901": {
+                "message_id": 901,
+                "group_id": "g1",
+                "message": [
+                    {
+                        "type": "video",
+                        "data": {
+                            "file": "qq-upload.mp4",
+                            "url": "https://cdn.example.invalid/qq-upload.mp4",
+                            "file_size": 12,
+                            "duration": 20,
+                        },
+                    }
+                ],
+            }
+        }
+    )
+    downloads: list[str] = []
+    ffmpeg_inputs: list[str] = []
+
+    async def run_process(cmd: list[str], _timeout: float) -> tuple[int, str, str]:
+        if cmd[0] == "ffprobe":
+            return 0, json.dumps({"streams": [{"codec_type": "video"}], "format": {"duration": "20.0"}}), ""
+        ffmpeg_inputs.append(cmd[cmd.index("-i") + 1])
+        Path(cmd[-1]).write_bytes(b"clip")
+        return 0, "", ""
+
+    async def download(url: str, target: Path, *, expected_size: int, max_size: int) -> None:
+        downloads.append(url)
+        assert expected_size == 12
+        assert max_size > 12
+        target.write_bytes(b"onebot-video")
+
+    service = VideoSliceCommandService(
+        cfg=_cfg(tmp_path),
+        sender=sender,
+        cache_index=cache,
+        run_process=run_process,
+        platform_system=lambda: "Linux",
+    )
+    service._download_onebot_url = download
+
+    result = asyncio.run(
+        service.handle(
+            DummyEvent(
+                text="/parserclip slice --source reply --start 1 --duration 10",
+                raw={"message_id": "cmd1", "message": [{"type": "reply", "data": {"id": "901"}}]},
+                bot=bot,
+                sender_id="router-bot",
+            )
+        )
+    )
+    resolved, reason = cache.resolve(group_id="g1", source="reply", reply_raw_id="901")
+
+    assert result.status == "ok"
+    assert len(sender.results) == 1
+    assert downloads == ["https://cdn.example.invalid/qq-upload.mp4"]
+    assert bot.actions[0] == ("get_msg", {"message_id": 901})
+    assert resolved is not None
+    assert reason == ""
+    assert resolved.path.parent == tmp_path
+    assert resolved.path.name.startswith("onebot_901_")
+    assert resolved.source_raw_id == "901"
+    assert resolved.source_key.startswith("onebot:")
+    assert "cdn.example.invalid" not in resolved.source_key
+    assert ffmpeg_inputs == [str(resolved.path)]
+
+
+def test_uncached_onebot_file_video_reply_fetches_url_then_slices(tmp_path: Path) -> None:
+    cache = VideoSliceCacheIndex()
+    sender = DummySender()
+    bot = FakeOneBot(
+        {
+            "902": {
+                "message_id": 902,
+                "group_id": "1001",
+                "message": [
+                    {
+                        "type": "file",
+                        "data": {
+                            "file": "group-file-id",
+                            "file_name": "unknown.mp4",
+                            "file_size": 12,
+                        },
+                    }
+                ],
+            }
+        }
+    )
+
+    async def run_process(cmd: list[str], _timeout: float) -> tuple[int, str, str]:
+        if cmd[0] == "ffprobe":
+            return 0, json.dumps({"streams": [{"codec_type": "video"}], "format": {"duration": "20.0"}}), ""
+        Path(cmd[-1]).write_bytes(b"clip")
+        return 0, "", ""
+
+    async def download(_url: str, target: Path, *, expected_size: int, max_size: int) -> None:
+        target.write_bytes(b"onebot-video")
+
+    service = VideoSliceCommandService(
+        cfg=_cfg(tmp_path),
+        sender=sender,
+        cache_index=cache,
+        run_process=run_process,
+        platform_system=lambda: "Linux",
+    )
+    service._download_onebot_url = download
+
+    result = asyncio.run(
+        service.handle(
+            DummyEvent(
+                text="/parserclip slice --source reply --start 1 --duration 10",
+                group_id="1001",
+                raw={"message_id": "cmd1", "message": [{"type": "reply", "data": {"id": "902"}}]},
+                bot=bot,
+                sender_id="router-bot",
+            )
+        )
+    )
+
+    assert result.status == "ok"
+    assert bot.actions[1] == ("get_group_file_url", {"file_id": "group-file-id", "group_id": 1001})
+    assert cache.resolve(group_id="1001", source="reply", reply_raw_id="902")[0] is not None
+
+
+def test_uncached_onebot_reply_rejects_missing_size_without_download(tmp_path: Path) -> None:
+    cache = VideoSliceCacheIndex()
+    bot = FakeOneBot(
+        {
+            "903": {
+                "message_id": 903,
+                "group_id": "g1",
+                "message": [
+                    {
+                        "type": "video",
+                        "data": {"file": "qq-upload.mp4", "url": "https://cdn.example.invalid/qq-upload.mp4"},
+                    }
+                ],
+            }
+        }
+    )
+    service = VideoSliceCommandService(
+        cfg=_cfg(tmp_path),
+        sender=DummySender(),
+        cache_index=cache,
+        run_process=lambda *_: _ok_probe(),
+    )
+
+    result = asyncio.run(
+        service.handle(
+            DummyEvent(
+                text="/parserclip slice --source reply --start 1 --duration 10",
+                raw={"message_id": "cmd1", "message": [{"type": "reply", "data": {"id": "903"}}]},
+                bot=bot,
+                sender_id="router-bot",
+            )
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.message == "parserclip slice 失败: reply_media_size_unknown"
+    assert str(tmp_path) not in result.message
+
+
+def test_uncached_onebot_reply_rejects_cross_group(tmp_path: Path) -> None:
+    cache = VideoSliceCacheIndex()
+    bot = FakeOneBot(
+        {
+            "904": {
+                "message_id": 904,
+                "group_id": "other-group",
+                "message": [
+                    {
+                        "type": "video",
+                        "data": {
+                            "file": "qq-upload.mp4",
+                            "url": "https://cdn.example.invalid/qq-upload.mp4",
+                            "file_size": 12,
+                        },
+                    }
+                ],
+            }
+        }
+    )
+    service = VideoSliceCommandService(
+        cfg=_cfg(tmp_path),
+        sender=DummySender(),
+        cache_index=cache,
+        run_process=lambda *_: _ok_probe(),
+    )
+
+    result = asyncio.run(
+        service.handle(
+            DummyEvent(
+                text="/parserclip slice --source reply --start 1 --duration 10",
+                raw={"message_id": "cmd1", "message": [{"type": "reply", "data": {"id": "904"}}]},
+                bot=bot,
+                sender_id="router-bot",
+            )
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.message == "parserclip slice 失败: reply_media_cross_group"
+
+
+def test_uncached_onebot_reply_rejects_local_path_without_url(tmp_path: Path) -> None:
+    cache = VideoSliceCacheIndex()
+    bot = FakeOneBot(
+        {
+            "905": {
+                "message_id": 905,
+                "group_id": "g1",
+                "message": [
+                    {
+                        "type": "video",
+                        "data": {"file": "/tmp/unsafe.mp4", "file_size": 12},
+                    }
+                ],
+            }
+        }
+    )
+    service = VideoSliceCommandService(
+        cfg=_cfg(tmp_path),
+        sender=DummySender(),
+        cache_index=cache,
+        run_process=lambda *_: _ok_probe(),
+    )
+
+    result = asyncio.run(
+        service.handle(
+            DummyEvent(
+                text="/parserclip slice --source reply --start 1 --duration 10",
+                raw={"message_id": "cmd1", "message": [{"type": "reply", "data": {"id": "905"}}]},
+                bot=bot,
+                sender_id="router-bot",
+            )
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.message == "parserclip slice 失败: reply_media_no_url"
+    assert str(tmp_path) not in result.message
 
 
 def test_slice_uses_ffprobe_ffmpeg_fallback_and_sender_path(tmp_path: Path) -> None:

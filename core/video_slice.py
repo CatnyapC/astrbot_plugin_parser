@@ -13,6 +13,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+
+import aiofiles
+from aiohttp import ClientSession, ClientTimeout
 
 from astrbot.api import logger
 
@@ -64,6 +68,17 @@ class TelegramReplyVideoMedia:
     file_size: int | None
     duration: float
     mime_type: str
+    file_name: str
+    message_id: str
+    kind: str
+
+
+@dataclass(slots=True)
+class OneBotReplyVideoMedia:
+    url: str
+    file_key: str
+    file_size: int | None
+    duration: float
     file_name: str
     message_id: str
     kind: str
@@ -307,6 +322,13 @@ class VideoSliceCommandService:
                     reply_raw_id=reply_raw_id,
                     resolve_reason=reason,
                 )
+            if entry is None and command.source == "reply" and reply_raw_id and not command.cache_id:
+                entry, reason = await self._cache_replied_onebot_video(
+                    event=event,
+                    group_id=group_id,
+                    reply_raw_id=reply_raw_id,
+                    resolve_reason=reason,
+                )
             if entry is None:
                 return VideoSliceResult("failed", f"parserclip slice 失败: {reason}")
         idem_key = self._idempotency_key(
@@ -422,6 +444,83 @@ class VideoSliceCommandService:
             return None, "reply_media_download_failed"
         return entry, ""
 
+    async def _cache_replied_onebot_video(
+        self,
+        *,
+        event: Any,
+        group_id: str,
+        reply_raw_id: str,
+        resolve_reason: str,
+    ) -> tuple[VideoSliceCacheEntry | None, str]:
+        if resolve_reason not in {"cache_empty", "reply_source_not_found"}:
+            return None, resolve_reason
+        reply_message, reason = await _onebot_reply_message(event, reply_raw_id)
+        if reply_message is None:
+            return None, reason or resolve_reason
+        reply_group = str(dict(reply_message).get("group_id") or "").strip()
+        if not reply_group:
+            return None, "reply_media_group_unknown"
+        if reply_group != str(group_id or "").strip():
+            return None, "reply_media_cross_group"
+        media, reason = await _onebot_reply_video_media(event, reply_message)
+        if media is None:
+            return None, reason
+        if not self._allow_direct_reply_media(event=event, media=media):
+            return None, "reply_media_policy_blocked"
+        max_size = int(getattr(self.cfg, "max_size", 0) or 0)
+        if media.file_size is None:
+            return None, "reply_media_size_unknown"
+        if max_size > 0 and media.file_size > max_size:
+            return None, "reply_media_too_large"
+        cache_root = Path(getattr(self.cfg, "cache_dir", "") or ".").resolve(strict=False)
+        if not cache_root.is_dir():
+            cache_root.mkdir(parents=True, exist_ok=True)
+        suffix = _safe_media_suffix(media.file_name, "video/mp4")
+        source_hash = hashlib.blake2b(media.file_key.encode(), digest_size=8).hexdigest()
+        safe_name = _clean_token(
+            f"onebot_{media.message_id}_{source_hash}",
+            max_len=96,
+        ) or hashlib.blake2b(str(time.time()).encode(), digest_size=8).hexdigest()
+        target_path = cache_root / f"{safe_name}{suffix}"
+        tmp_path = cache_root / f".{safe_name}{suffix}.part"
+        try:
+            await self._download_onebot_url(
+                media.url,
+                tmp_path,
+                expected_size=media.file_size,
+                max_size=max_size,
+            )
+            if not tmp_path.is_file() or tmp_path.stat().st_size <= 0:
+                return None, "reply_media_download_failed"
+            if max_size > 0 and tmp_path.stat().st_size > max_size:
+                return None, "reply_media_too_large"
+            tmp_path.replace(target_path)
+        except ValueError as exc:
+            reason = str(exc) or "reply_media_download_failed"
+            return None, reason if reason.startswith("reply_media_") else "reply_media_download_failed"
+        except Exception:
+            return None, "reply_media_download_failed"
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        entry = self.cache_index.record(
+            group_id=group_id,
+            path=target_path,
+            duration=media.duration,
+            source_raw_id=reply_raw_id,
+            source_key=f"onebot:{source_hash}",
+            parser_sent_output=False,
+        )
+        if entry is None:
+            try:
+                target_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return None, "reply_media_download_failed"
+        return entry, ""
+
     async def _download_telegram_file(self, event: Any, file_id: str, target_path: Path) -> None:
         timeout = _positive_int(
             getattr(self.cfg, "parser_video_slice_timeout_sec", None),
@@ -436,7 +535,42 @@ class VideoSliceCommandService:
             raise RuntimeError("telegram_download_unavailable")
         await asyncio.wait_for(downloader(custom_path=target_path), timeout=float(timeout))
 
-    def _allow_direct_reply_media(self, *, event: Any, media: TelegramReplyVideoMedia) -> bool:
+    async def _download_onebot_url(
+        self,
+        url: str,
+        target_path: Path,
+        *,
+        expected_size: int,
+        max_size: int,
+    ) -> None:
+        parsed = urlparse(str(url or "").strip())
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError("reply_media_no_url")
+        timeout = _positive_int(
+            getattr(self.cfg, "parser_video_slice_timeout_sec", None),
+            default=VIDEO_SLICE_DEFAULT_TIMEOUT_SEC,
+        )
+        async with ClientSession(timeout=ClientTimeout(total=float(timeout))) as session:
+            async with session.get(url, allow_redirects=True) as response:
+                if response.status >= 400:
+                    raise RuntimeError("download_http_failed")
+                content_length = _optional_positive_int(response.headers.get("Content-Length"))
+                if content_length is not None and content_length != expected_size:
+                    if max_size > 0 and content_length > max_size:
+                        raise ValueError("reply_media_too_large")
+                downloaded = 0
+                async with aiofiles.open(target_path, "wb") as file:
+                    async for chunk in response.content.iter_chunked(1024 * 1024):
+                        downloaded += len(chunk)
+                        if max_size > 0 and downloaded > max_size:
+                            raise ValueError("reply_media_too_large")
+                        await file.write(chunk)
+                if downloaded <= 0:
+                    raise RuntimeError("download_empty")
+                if expected_size > 0 and downloaded != expected_size:
+                    raise RuntimeError("download_incomplete")
+
+    def _allow_direct_reply_media(self, *, event: Any, media: TelegramReplyVideoMedia | OneBotReplyVideoMedia) -> bool:
         """Policy hook for future same-group uploaded-media scanners."""
         _ = (event, media)
         return True
@@ -706,6 +840,189 @@ def _telegram_media_from_obj(media_obj: Any, *, reply_message: Any, kind: str) -
         message_id=str(getattr(reply_message, "message_id", "") or "").strip(),
         kind=kind,
     )
+
+
+async def _onebot_reply_message(event: Any, reply_raw_id: str) -> tuple[dict[str, Any] | None, str]:
+    bot = getattr(event, "bot", None)
+    if bot is None:
+        return None, "reply_media_not_found"
+    message_id = _parse_int(reply_raw_id)
+    if message_id is None:
+        return None, "reply_media_not_found"
+    try:
+        call_action = getattr(bot, "call_action", None)
+        if callable(call_action):
+            payload = await call_action(action="get_msg", message_id=message_id)
+        else:
+            get_msg = getattr(bot, "get_msg", None)
+            if not callable(get_msg):
+                return None, "reply_media_not_found"
+            payload = await get_msg(message_id=message_id)
+    except Exception:
+        return None, "reply_media_fetch_failed"
+    if not isinstance(payload, dict):
+        return None, "reply_media_not_found"
+    return payload, ""
+
+
+async def _onebot_reply_video_media(
+    event: Any,
+    reply_message: dict[str, Any],
+) -> tuple[OneBotReplyVideoMedia | None, str]:
+    message_id = str(reply_message.get("message_id") or "").strip()
+    for segment in _onebot_message_segments(reply_message):
+        seg_type = str(segment.get("type") or "").strip().lower()
+        data = dict(segment.get("data") or {})
+        if seg_type == "video":
+            media = _onebot_video_segment_media(data, message_id=message_id, kind="video")
+            if media is not None:
+                return media, ""
+            return None, "reply_media_size_unknown" if _onebot_url_from_data(data) else "reply_media_no_url"
+        if seg_type == "file":
+            if not _onebot_file_segment_is_video(data):
+                return None, "reply_media_unsupported"
+            url = _onebot_url_from_data(data)
+            if not url:
+                url = await _onebot_group_file_url(event, reply_message, data)
+            media = _onebot_file_segment_media(data, url=url, message_id=message_id, kind="file")
+            if media is not None:
+                return media, ""
+            if not url:
+                return None, "reply_media_no_url"
+            return None, "reply_media_size_unknown"
+        if seg_type in {"image", "sticker", "record", "audio", "voice", "face"}:
+            return None, "reply_media_unsupported"
+    return None, "reply_media_not_found"
+
+
+def _onebot_message_segments(reply_message: dict[str, Any]) -> list[dict[str, Any]]:
+    message = reply_message.get("message")
+    if isinstance(message, list):
+        return [item for item in message if isinstance(item, dict)]
+    return []
+
+
+def _onebot_video_segment_media(
+    data: dict[str, Any],
+    *,
+    message_id: str,
+    kind: str,
+) -> OneBotReplyVideoMedia | None:
+    url = _onebot_url_from_data(data)
+    if not url:
+        return None
+    file_size = _onebot_file_size(data)
+    if file_size is None:
+        return None
+    file_name = _onebot_file_name(data)
+    file_key = _onebot_file_key(data, url=url)
+    return OneBotReplyVideoMedia(
+        url=url,
+        file_key=file_key,
+        file_size=file_size,
+        duration=_onebot_duration(data),
+        file_name=file_name,
+        message_id=message_id,
+        kind=kind,
+    )
+
+
+def _onebot_file_segment_media(
+    data: dict[str, Any],
+    *,
+    url: str,
+    message_id: str,
+    kind: str,
+) -> OneBotReplyVideoMedia | None:
+    if not url:
+        return None
+    file_size = _onebot_file_size(data)
+    if file_size is None:
+        return None
+    return OneBotReplyVideoMedia(
+        url=url,
+        file_key=_onebot_file_key(data, url=url),
+        file_size=file_size,
+        duration=_onebot_duration(data),
+        file_name=_onebot_file_name(data),
+        message_id=message_id,
+        kind=kind,
+    )
+
+
+async def _onebot_group_file_url(
+    event: Any,
+    reply_message: dict[str, Any],
+    data: dict[str, Any],
+) -> str:
+    file_id = str(data.get("file_id") or data.get("file") or data.get("id") or "").strip()
+    group_id = _parse_int(reply_message.get("group_id"))
+    if not file_id or group_id is None:
+        return ""
+    bot = getattr(event, "bot", None)
+    call_action = getattr(bot, "call_action", None)
+    if not callable(call_action):
+        return ""
+    try:
+        ret = await call_action(action="get_group_file_url", file_id=file_id, group_id=group_id)
+    except Exception:
+        return ""
+    if not isinstance(ret, dict):
+        return ""
+    return _safe_http_url(ret.get("url") or ret.get("file_url"))
+
+
+def _onebot_file_segment_is_video(data: dict[str, Any]) -> bool:
+    mime = str(data.get("mime") or data.get("mime_type") or "").strip().lower()
+    if mime.startswith("video/"):
+        return True
+    suffix = Path(_onebot_file_name(data)).suffix.lower()
+    return suffix in {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
+
+
+def _onebot_url_from_data(data: dict[str, Any]) -> str:
+    for key in ("url", "file_url", "download_url"):
+        url = _safe_http_url(data.get(key))
+        if url:
+            return url
+    file_value = str(data.get("file") or "").strip()
+    return _safe_http_url(file_value)
+
+
+def _safe_http_url(value: Any) -> str:
+    url = str(value or "").strip()
+    parsed = urlparse(url)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return url
+    return ""
+
+
+def _onebot_file_size(data: dict[str, Any]) -> int | None:
+    for key in ("file_size", "size", "filesize"):
+        parsed = _optional_positive_int(data.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _onebot_duration(data: dict[str, Any]) -> float:
+    for key in ("duration", "seconds", "time"):
+        value = _float_or_zero(data.get(key))
+        if value > 0:
+            return value
+    return 0.0
+
+
+def _onebot_file_name(data: dict[str, Any]) -> str:
+    return str(data.get("file_name") or data.get("name") or data.get("file") or "upload.mp4").strip()
+
+
+def _onebot_file_key(data: dict[str, Any], *, url: str) -> str:
+    for key in ("file_unique_id", "file_id", "file", "id", "md5"):
+        value = str(data.get(key) or "").strip()
+        if value and not value.startswith(("file://", "/")):
+            return value
+    return hashlib.blake2b(url.encode(), digest_size=16).hexdigest()
 
 
 def _safe_media_suffix(file_name: str, mime_type: str) -> str:
