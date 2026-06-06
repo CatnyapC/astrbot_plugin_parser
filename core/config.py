@@ -153,6 +153,12 @@ class ParserItem(ConfigNode):
     enable: bool
     use_proxy: bool
     cookies: str | None
+    x_api_enable: bool | None
+    x_api_auth_mode: str | None
+    x_api_bearer_token: str | None
+    x_api_user_bearer_token: str | None
+    x_api_timeout_seconds: int | None
+    x_api_cache_ttl_seconds: int | None
     show_body_text: bool | None
     video_send_mode: str | None
     video_codecs: str | None

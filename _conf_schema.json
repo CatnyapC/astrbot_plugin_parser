@@ -438,9 +438,44 @@
                     },
                     "cookies": {
                         "description": "Cookies",
-                        "hint": "选填",
+                        "hint": "旧 xdown 路径不再发送这里的 X 登录 Cookie；隐藏/敏感内容请优先配置 X API",
                         "type": "text",
                         "default": ""
+                    },
+                    "x_api_enable": {
+                        "description": "启用 X 官方 API 兜底",
+                        "hint": "仅在 xdown 无媒体/空数据等疑似隐藏内容失败时调用",
+                        "type": "bool",
+                        "default": false
+                    },
+                    "x_api_auth_mode": {
+                        "description": "X API 授权模式",
+                        "hint": "bearer 或 oauth2_user；敏感内容更可能需要用户上下文 token",
+                        "type": "text",
+                        "default": "bearer"
+                    },
+                    "x_api_bearer_token": {
+                        "description": "X API Bearer Token",
+                        "hint": "仅发往 api.x.com，不会发送给 xdown.app",
+                        "type": "text",
+                        "default": ""
+                    },
+                    "x_api_user_bearer_token": {
+                        "description": "X API OAuth2 用户 Token",
+                        "hint": "auth_mode=oauth2_user 时使用；需该用户本身可见敏感内容",
+                        "type": "text",
+                        "default": ""
+                    },
+                    "x_api_timeout_seconds": {
+                        "description": "X API 超时秒数",
+                        "type": "int",
+                        "default": 15
+                    },
+                    "x_api_cache_ttl_seconds": {
+                        "description": "X API 本进程缓存秒数",
+                        "hint": "降低重复付费读取和 rate limit；重启后清空",
+                        "type": "int",
+                        "default": 3600
                     }
                 }
             },
