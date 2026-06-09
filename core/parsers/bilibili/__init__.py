@@ -413,24 +413,87 @@ class BilibiliParser(BaseParser):
         # 获取下载数据
         download_url_data = await video.get_download_url(page_index=page_index)
         detecter = VideoDownloadURLDataDetecter(download_url_data)
-        streams = detecter.detect_best_streams(
+        try:
+            streams = detecter.detect_best_streams(
+                video_max_quality=self.video_quality,
+                codecs=[self.video_codecs],
+                no_dolby_video=True,
+                no_hdr=True,
+            )
+        except AttributeError as exc:
+            if "video_codecs" not in str(exc):
+                raise
+            logger.warning(
+                "[bilibili] detect_best_streams failed on missing codec, "
+                "falling back to manual stream selection"
+            )
+            streams = self._detect_best_streams_fallback(
+                detecter,
+                VideoStreamDownloadURL,
+                AudioStreamDownloadURL,
+            )
+
+        video_stream, audio_stream = self._split_download_streams(
+            streams,
+            VideoStreamDownloadURL,
+            AudioStreamDownloadURL,
+        )
+        logger.debug(
+            f"视频流质量: {video_stream.video_quality.name}, 编码: {video_stream.video_codecs}"
+        )
+
+        if audio_stream is None:
+            return video_stream.url, None
+        logger.debug(f"音频流质量: {audio_stream.audio_quality.name}")
+        return video_stream.url, audio_stream.url
+
+    def _detect_best_streams_fallback(
+        self,
+        detecter,
+        video_stream_cls,
+        audio_stream_cls,
+    ) -> list[object]:
+        streams = detecter.detect(
             video_max_quality=self.video_quality,
             codecs=[self.video_codecs],
             no_dolby_video=True,
             no_hdr=True,
         )
-        video_stream = streams[0]
-        if not isinstance(video_stream, VideoStreamDownloadURL):
-            raise DownloadException("未找到可下载的视频流")
-        logger.debug(
-            f"视频流质量: {video_stream.video_quality.name}, 编码: {video_stream.video_codecs}"
+        video_streams = [
+            stream for stream in streams if isinstance(stream, video_stream_cls)
+        ]
+        audio_streams = [
+            stream for stream in streams if isinstance(stream, audio_stream_cls)
+        ]
+        video_streams.sort(key=self._video_stream_score, reverse=True)
+        audio_streams.sort(
+            key=lambda stream: getattr(stream.audio_quality, "value", 0),
+            reverse=True,
         )
+        return [
+            video_streams[0] if video_streams else None,
+            audio_streams[0] if audio_streams else None,
+        ]
 
-        audio_stream = streams[1]
-        if not isinstance(audio_stream, AudioStreamDownloadURL):
-            return video_stream.url, None
-        logger.debug(f"音频流质量: {audio_stream.audio_quality.name}")
-        return video_stream.url, audio_stream.url
+    def _video_stream_score(self, stream) -> tuple[int, int]:
+        quality = getattr(getattr(stream, "video_quality", None), "value", 0)
+        codec = getattr(stream, "video_codecs", None)
+        codec_score = 1 if codec == self.video_codecs else 0
+        return quality, codec_score
 
+    @staticmethod
+    def _split_download_streams(
+        streams: list[object],
+        video_stream_cls,
+        audio_stream_cls,
+    ):
+        video_stream = streams[0] if streams else None
+        if not isinstance(video_stream, video_stream_cls):
+            raise DownloadException("未找到可下载的视频流")
+
+        audio_stream = streams[1] if len(streams) > 1 else None
+        if not isinstance(audio_stream, audio_stream_cls):
+            audio_stream = None
+        return video_stream, audio_stream
 
 
