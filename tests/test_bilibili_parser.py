@@ -23,6 +23,32 @@ class _FakeDetector:
         return self.streams
 
 
+class _BrokenBestStreamDetector(_FakeDetector):
+    def __init__(self, _download_url_data):
+        super().__init__(
+            [
+                VideoStreamDownloadURL(
+                    url="https://example.test/fallback.m4s",
+                    video_quality=VideoQuality._720P,
+                    video_codecs=None,  # type: ignore[arg-type]
+                ),
+                AudioStreamDownloadURL(
+                    url="https://example.test/fallback-audio.m4s",
+                    audio_quality=AudioQuality._192K,
+                ),
+            ]
+        )
+
+    def detect_best_streams(self, **_kwargs):
+        raise AttributeError("'NoneType' object has no attribute 'value'")
+
+
+class _FakeVideo:
+    async def get_download_url(self, *, page_index):
+        assert page_index == 0
+        return {}
+
+
 def _parser() -> BilibiliParser:
     parser = object.__new__(BilibiliParser)
     parser.video_quality = VideoQuality._720P
@@ -70,3 +96,21 @@ def test_bilibili_split_download_streams_rejects_missing_video_stream():
             VideoStreamDownloadURL,
             AudioStreamDownloadURL,
         )
+
+
+@pytest.mark.asyncio
+async def test_bilibili_extract_download_urls_falls_back_on_best_stream_error(
+    monkeypatch,
+):
+    import bilibili_api.video
+
+    monkeypatch.setattr(
+        bilibili_api.video,
+        "VideoDownloadURLDataDetecter",
+        _BrokenBestStreamDetector,
+    )
+
+    video_url, audio_url = await _parser().extract_download_urls(video=_FakeVideo())
+
+    assert video_url == "https://example.test/fallback.m4s"
+    assert audio_url == "https://example.test/fallback-audio.m4s"

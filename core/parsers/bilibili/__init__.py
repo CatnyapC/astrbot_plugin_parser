@@ -420,11 +420,9 @@ class BilibiliParser(BaseParser):
                 no_dolby_video=True,
                 no_hdr=True,
             )
-        except AttributeError as exc:
-            if "video_codecs" not in str(exc):
-                raise
+        except AttributeError:
             logger.warning(
-                "[bilibili] detect_best_streams failed on missing codec, "
+                "[bilibili] detect_best_streams failed, "
                 "falling back to manual stream selection"
             )
             streams = self._detect_best_streams_fallback(
@@ -495,5 +493,4 @@ class BilibiliParser(BaseParser):
         if not isinstance(audio_stream, audio_stream_cls):
             audio_stream = None
         return video_stream, audio_stream
-
 
