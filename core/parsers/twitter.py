@@ -1,3 +1,4 @@
+import asyncio
 import re
 import time
 from itertools import chain
@@ -71,6 +72,10 @@ class TwitterParser(BaseParser):
 
     def _tweet_id_from_match(self, searched: re.Match[str]) -> str:
         return searched.group("tweet_id")
+
+    @staticmethod
+    def _canonical_xdown_url(tweet_id: str) -> str:
+        return f"https://x.com/i/status/{tweet_id}"
 
     async def _req_x_api_post(self, tweet_id: str) -> dict[str, Any]:
         if not self._x_api_enabled():
@@ -239,7 +244,7 @@ class TwitterParser(BaseParser):
         url = searched.group(0)
         tweet_id = self._tweet_id_from_match(searched)
         try:
-            resp = await self._req_xdown_api(url)
+            resp = await self._req_xdown_api(self._canonical_xdown_url(tweet_id))
             if resp.get("status") != "ok":
                 raise ParseException("解析失败")
 
@@ -251,7 +256,7 @@ class TwitterParser(BaseParser):
             result = self.parse_twitter_html(html_content)
             if not result.contents:
                 raise ParseException("解析失败, 未返回媒体")
-        except (ClientError, ParseException):
+        except (ClientError, ParseException, asyncio.TimeoutError):
             if not self._x_api_enabled():
                 raise
             result = await self._parse_x_api(tweet_id, url)

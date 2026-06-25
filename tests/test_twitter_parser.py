@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 from types import MethodType, SimpleNamespace
@@ -148,6 +149,77 @@ def test_twitter_xdown_empty_falls_back_to_x_api_photo():
     assert result.title == "hidden post"
     assert result.author.name == "author"
     assert len(result.img_contents) == 1
+
+
+def test_twitter_media_permalink_is_canonicalized_for_xdown():
+    parser = _parser_with_api(enabled=False)
+    requested_urls = []
+
+    async def fake_req_xdown_api(self, url: str):
+        requested_urls.append(url)
+        return {
+            "status": "ok",
+            "data": '<a class="abutton" href="https://cdn.example/p.jpg">下载图片</a>',
+        }
+
+    parser._req_xdown_api = MethodType(fake_req_xdown_api, parser)
+
+    pattern = dict(TwitterParser._key_patterns)["x.com"]
+    result = asyncio.run(
+        parser._parse(
+            pattern.search("https://x.com/user/status/123/video/1?s=20")
+        )
+    )
+
+    assert requested_urls == ["https://x.com/i/status/123"]
+    assert result.url == "https://x.com/user/status/123/video/1?s=20"
+
+
+def test_twitter_xdown_timeout_falls_back_to_x_api_video():
+    parser = _parser_with_api(enabled=True)
+
+    async def fake_req_xdown_api(self, url: str):
+        assert url == "https://x.com/i/status/2069918493554659648"
+        raise asyncio.TimeoutError
+
+    async def fake_req_x_api_post(self, tweet_id: str):
+        assert tweet_id == "2069918493554659648"
+        return {
+            "data": {
+                "id": tweet_id,
+                "attachments": {"media_keys": ["7_1"]},
+            },
+            "includes": {
+                "media": [
+                    {
+                        "media_key": "7_1",
+                        "type": "video",
+                        "duration_ms": 1000,
+                        "preview_image_url": "https://pbs.twimg.com/cover.jpg",
+                        "variants": [
+                            {
+                                "content_type": "video/mp4",
+                                "bit_rate": 832000,
+                                "url": "https://video.twimg.com/high.mp4",
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+
+    parser._req_xdown_api = MethodType(fake_req_xdown_api, parser)
+    parser._req_x_api_post = MethodType(fake_req_x_api_post, parser)
+
+    pattern = dict(TwitterParser._key_patterns)["x.com"]
+    result = asyncio.run(
+        parser._parse(
+            pattern.search("https://x.com/BRK_gif/status/2069918493554659648/video/1")
+        )
+    )
+
+    assert len(result.video_contents) == 1
+    assert result.video_contents[0].source_key == "https://video.twimg.com/high.mp4"
 
 
 def test_twitter_x_api_video_picks_highest_bitrate_variant():
