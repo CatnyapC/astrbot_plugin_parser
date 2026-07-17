@@ -258,9 +258,7 @@ class VideoSliceCacheIndex:
         if normalized_source == "current":
             return bucket[-1], ""
         if normalized_source == "latest":
-            if len(bucket) == 1:
-                return bucket[0], ""
-            return None, "source_ambiguous"
+            return bucket[-1], ""
         return None, "source_invalid"
 
     @staticmethod
@@ -307,6 +305,9 @@ class VideoSliceCommandService:
         group_id = str(event.get_group_id() or "").strip()
         if not group_id:
             return VideoSliceResult("rejected", "parserclip slice 仅支持群聊")
+        sender_id = str(event.get_sender_id() or "").strip()
+        if not self._controller_allowed(event, sender_id=sender_id):
+            return VideoSliceResult("rejected", "无权执行 parserclip slice")
         reply_raw_id = _reply_raw_id(event)
         entry, reason = self.cache_index.resolve(
             group_id=group_id,
@@ -608,6 +609,16 @@ class VideoSliceCommandService:
             return False
         self._rate_limit_count += 1
         return True
+
+    def _controller_allowed(self, event: Any, *, sender_id: str) -> bool:
+        controllers = _configured_controller_ids(self.cfg)
+        admins = {str(item).strip() for item in getattr(self.cfg, "admins_id", []) if str(item).strip()}
+        self_id = str(event.get_self_id() or "").strip()
+        try:
+            event_is_admin = bool(event.is_admin())
+        except Exception:
+            event_is_admin = False
+        return bool(sender_id and (sender_id in controllers or sender_id in admins or sender_id == self_id or event_is_admin))
 
     async def _probe_video(self, path: Path) -> dict[str, Any]:
         timeout = _positive_int(

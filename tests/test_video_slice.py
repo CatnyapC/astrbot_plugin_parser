@@ -154,7 +154,7 @@ def _cfg(tmp_path: Path, **overrides):
         "cache_dir": tmp_path,
         "max_size": 20 * 1024 * 1024,
         "admins_id": ["admin1"],
-        "parser_video_slice_controller_ids": "controller1",
+        "parser_video_slice_controller_ids": "controller1,router-bot",
         "parser_video_slice_max_duration_sec": 60,
         "parser_video_slice_timeout_sec": 10,
     }
@@ -201,7 +201,7 @@ def test_parse_parserclip_slice_command_accepts_missing_legacy_nonce() -> None:
     assert parsed.nonce == ""
 
 
-def test_cache_source_resolver_reply_current_latest_and_ambiguous(tmp_path: Path) -> None:
+def test_cache_source_resolver_reply_current_and_latest(tmp_path: Path) -> None:
     cache = VideoSliceCacheIndex()
     first = cache.record(group_id="g1", path=_video(tmp_path, "a.mp4"), source_raw_id="r1")
     assert first is not None
@@ -212,9 +212,7 @@ def test_cache_source_resolver_reply_current_latest_and_ambiguous(tmp_path: Path
     second = cache.record(group_id="g1", path=_video(tmp_path, "b.mp4"), source_raw_id="r2")
     assert second is not None
     assert cache.resolve(group_id="g1", source="current")[0] == second
-    latest, reason = cache.resolve(group_id="g1", source="latest")
-    assert latest is None
-    assert reason == "source_ambiguous"
+    assert cache.resolve(group_id="g1", source="latest")[0] == second
     assert cache.resolve(group_id="g2", source="current")[1] == "cache_empty"
 
 
@@ -356,7 +354,7 @@ def test_cache_cleaner_prunes_video_slice_index(tmp_path: Path) -> None:
     assert json.loads(persist_path.read_text(encoding="utf-8"))["entries"] == []
 
 
-def test_group_guard_still_rejects_private(tmp_path: Path) -> None:
+def test_controller_allowlist_and_group_guard(tmp_path: Path) -> None:
     service = VideoSliceCommandService(
         cfg=_cfg(tmp_path),
         sender=DummySender(),
@@ -364,12 +362,16 @@ def test_group_guard_still_rejects_private(tmp_path: Path) -> None:
         run_process=lambda *_: _ok_probe(),
     )
 
+    rejected = asyncio.run(service.handle(DummyEvent(sender_id="ordinary", self_id="bot1")))
+    assert rejected.status == "rejected"
+    assert "无权" in rejected.message
+
     private = asyncio.run(service.handle(DummyEvent(group_id="", sender_id="bot1", self_id="bot1")))
     assert private.status == "rejected"
     assert "群聊" in private.message
 
 
-def test_ordinary_non_admin_can_execute_slice(tmp_path: Path) -> None:
+def test_controller_can_execute_slice(tmp_path: Path) -> None:
     source = _video(tmp_path)
     cache = VideoSliceCacheIndex()
     cache.record(group_id="g1", path=source, source_raw_id="src-video", duration=20)
@@ -389,7 +391,7 @@ def test_ordinary_non_admin_can_execute_slice(tmp_path: Path) -> None:
         platform_system=lambda: "Linux",
     )
 
-    result = asyncio.run(service.handle(DummyEvent(sender_id="ordinary", self_id="bot1")))
+    result = asyncio.run(service.handle(DummyEvent(sender_id="controller1", self_id="bot1")))
 
     assert result.status == "ok"
     assert result.sent is True
@@ -921,7 +923,7 @@ def test_legacy_nonce_command_still_executes(tmp_path: Path) -> None:
         service.handle(
             DummyEvent(
                 text="/parserclip slice --source reply --start 2 --duration 3 --requester old --nonce old-nonce",
-                sender_id="ordinary",
+                sender_id="controller1",
                 self_id="bot1",
             )
         )
@@ -956,7 +958,7 @@ def test_global_rate_limit_rejects_thirty_first_request(tmp_path: Path) -> None:
             service.handle(
                 DummyEvent(
                     text=f"/parserclip slice --source reply --start 2 --duration {idx + 1}",
-                    sender_id="ordinary",
+                    sender_id="controller1",
                     self_id="bot1",
                 )
             )
@@ -967,7 +969,7 @@ def test_global_rate_limit_rejects_thirty_first_request(tmp_path: Path) -> None:
         service.handle(
             DummyEvent(
                 text="/parserclip slice --source reply --start 2 --duration 31",
-                sender_id="ordinary",
+                sender_id="controller1",
                 self_id="bot1",
             )
         )
@@ -987,7 +989,7 @@ def test_global_rate_limit_rejects_thirty_first_request(tmp_path: Path) -> None:
         restarted.handle(
             DummyEvent(
                 text="/parserclip slice --source reply --start 2 --duration 31",
-                sender_id="ordinary",
+                sender_id="controller1",
                 self_id="bot1",
             )
         )
