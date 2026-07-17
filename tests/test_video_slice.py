@@ -83,7 +83,7 @@ def test_parse_parserclip_slice_command_contract() -> None:
     assert parsed.nonce == "pvs-g1-10001-123"
 
 
-def test_cache_source_resolver_reply_current_latest_and_ambiguous(tmp_path: Path) -> None:
+def test_cache_source_resolver_reply_current_and_latest(tmp_path: Path) -> None:
     cache = VideoSliceCacheIndex()
     first = cache.record(group_id="g1", path=_video(tmp_path, "a.mp4"), source_raw_id="r1")
     assert first is not None
@@ -94,9 +94,7 @@ def test_cache_source_resolver_reply_current_latest_and_ambiguous(tmp_path: Path
     second = cache.record(group_id="g1", path=_video(tmp_path, "b.mp4"), source_raw_id="r2")
     assert second is not None
     assert cache.resolve(group_id="g1", source="current")[0] == second
-    latest, reason = cache.resolve(group_id="g1", source="latest")
-    assert latest is None
-    assert reason == "source_ambiguous"
+    assert cache.resolve(group_id="g1", source="latest")[0] == second
     assert cache.resolve(group_id="g2", source="current")[1] == "cache_empty"
 
 

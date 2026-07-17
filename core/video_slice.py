@@ -128,9 +128,7 @@ class VideoSliceCacheIndex:
         if normalized_source == "current":
             return bucket[-1], ""
         if normalized_source == "latest":
-            if len(bucket) == 1:
-                return bucket[0], ""
-            return None, "source_ambiguous"
+            return bucket[-1], ""
         return None, "source_invalid"
 
 
