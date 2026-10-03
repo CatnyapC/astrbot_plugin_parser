@@ -42,6 +42,7 @@ class XHSParser(BaseParser):
             self.headers["cookie"] = self.cookiejar.cookies_str
             self.ios_headers["cookie"] = self.cookiejar.cookies_str
 
+    @handle("xhslink.cn", r"xhslink\.cn/[A-Za-z0-9._?%&+=/#@-]+")
     @handle("xhslink.com", r"xhslink\.com/[A-Za-z0-9._?%&+=/#@-]+")
     async def _parse_short_link(self, searched: re.Match[str]):
         url = f"https://{searched.group(0)}"
