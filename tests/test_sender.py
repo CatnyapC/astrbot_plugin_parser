@@ -2,12 +2,19 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.message.components import Image, Nodes, Plain, Video
+from astrbot.core.message.message_event_result import MessageChain
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core.data import Author, ImageContent, ParseResult, Platform
+from core.data import (
+    Author,
+    DynamicContent,
+    ImageContent,
+    ParseResult,
+    Platform,
+    VideoContent,
+)
 from core.debounce import Debouncer
 from core.sender import MessageSender
 
@@ -262,6 +269,48 @@ def test_send_group_retries_with_perturbed_png_after_second_failure():
     assert attempts[0].chain[0] is original
     assert attempts[1].chain[0] is retried
     assert attempts[2].chain[0] is perturbed
+
+
+def test_build_segments_sends_true_gif_video_content_as_image(tmp_path):
+    sender = build_sender()
+    gif_path = tmp_path / "animated.gif"
+    gif_path.write_bytes(b"GIF89a\x01\x00\x01\x00\x80\x00\x00")
+
+    segs = __import__("asyncio").run(
+        sender._build_segments(
+            object(),
+            {
+                "render_card": False,
+                "force_merge": False,
+                "light": [],
+                "heavy": [VideoContent(gif_path)],
+            },
+        )
+    )
+
+    assert len(segs) == 1
+    assert isinstance(segs[0], Image)
+
+
+def test_build_segments_keeps_dynamic_mp4_as_video(tmp_path):
+    sender = build_sender()
+    mp4_path = tmp_path / "animated.mp4"
+    mp4_path.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+
+    segs = __import__("asyncio").run(
+        sender._build_segments(
+            object(),
+            {
+                "render_card": False,
+                "force_merge": False,
+                "light": [],
+                "heavy": [DynamicContent(mp4_path)],
+            },
+        )
+    )
+
+    assert len(segs) == 1
+    assert isinstance(segs[0], Video)
 
 
 def test_resource_debounce_marks_only_after_success():

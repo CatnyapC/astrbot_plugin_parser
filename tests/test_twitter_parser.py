@@ -6,7 +6,7 @@ from types import MethodType, SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
-from core.data import Author, ImageContent, ParseResult, VideoContent
+from core.data import Author, DynamicContent, ImageContent, ParseResult, VideoContent
 from core.exception import ParseException
 from core.parsers.twitter import TwitterParser
 
@@ -267,6 +267,45 @@ def test_twitter_x_api_video_picks_highest_bitrate_variant():
     assert isinstance(video, VideoContent)
     assert video.source_key == "https://video.twimg.com/high.mp4"
     assert video.duration == 12
+
+
+def test_twitter_x_api_animated_gif_uses_dynamic_content():
+    parser = _parser_with_api(enabled=True)
+
+    async def fake_req_x_api_post(self, _tweet_id: str):
+        return {
+            "data": {
+                "id": "1",
+                "attachments": {"media_keys": ["7_1"]},
+            },
+            "includes": {
+                "media": [
+                    {
+                        "media_key": "7_1",
+                        "type": "animated_gif",
+                        "variants": [
+                            {
+                                "content_type": "video/mp4",
+                                "bit_rate": 832000,
+                                "url": "https://video.twimg.com/loop.mp4",
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+
+    parser._req_x_api_post = MethodType(fake_req_x_api_post, parser)
+
+    result = __import__("asyncio").run(
+        parser._parse_x_api("1", "https://x.com/i/status/1")
+    )
+
+    assert result.video_contents == []
+    assert len(result.dynamic_contents) == 1
+    dynamic = result.dynamic_contents[0]
+    assert isinstance(dynamic, DynamicContent)
+    assert dynamic.source_key == "https://video.twimg.com/loop.mp4"
 
 
 def test_twitter_api_enabled_without_token_fails_before_request():

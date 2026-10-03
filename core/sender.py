@@ -235,6 +235,14 @@ class MessageSender:
             return Path("/" + uri.removeprefix("file:///"))
         return None
 
+    @staticmethod
+    def _is_gif_file(path: Path) -> bool:
+        try:
+            with path.open("rb") as file:
+                return file.read(6) in {b"GIF87a", b"GIF89a"}
+        except OSError:
+            return False
+
     async def _normalize_image_for_retry(self, path: Path) -> Path | None:
         src = path.resolve()
         if not src.is_file():
@@ -467,7 +475,8 @@ class MessageSender:
 
             match cont:
                 case VideoContent() | DynamicContent():
-                    segs.append(Video(self._to_file_uri(path)))
+                    component = Image if self._is_gif_file(path) else Video
+                    segs.append(component(self._to_file_uri(path)))
                 case AudioContent():
                     segs.append(
                         File(name=path.name, file=self._to_file_uri(path))
