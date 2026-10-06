@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -47,6 +48,44 @@ class _FakeVideo:
     async def get_download_url(self, *, page_index):
         assert page_index == 0
         return {}
+
+
+class _FakeCredential:
+    def has_sessdata(self):
+        return True
+
+
+class _AISummaryFailingVideo:
+    credential = _FakeCredential()
+
+    async def get_info(self):
+        return {
+            "bvid": "BV1xx411c7mD",
+            "title": "title",
+            "desc": "desc",
+            "duration": 10,
+            "owner": {"mid": 1, "name": "up", "face": ""},
+            "stat": {
+                "view": 1,
+                "danmaku": 0,
+                "reply": 0,
+                "favorite": 0,
+                "coin": 0,
+                "share": 0,
+                "like": 0,
+            },
+            "pubdate": 1,
+            "ctime": 1,
+            "pic": None,
+            "pages": [{"part": "part", "ctime": 1, "duration": 10}],
+        }
+
+    async def get_cid(self, page_index):
+        assert page_index == 0
+        return 1
+
+    async def get_ai_conclusion(self, _cid):
+        raise RuntimeError("账号未登录")
 
 
 def _parser() -> BilibiliParser:
@@ -114,3 +153,24 @@ async def test_bilibili_extract_download_urls_falls_back_on_best_stream_error(
 
     assert video_url == "https://example.test/fallback.m4s"
     assert audio_url == "https://example.test/fallback-audio.m4s"
+
+
+@pytest.mark.asyncio
+async def test_bilibili_parse_video_continues_when_ai_summary_fails(tmp_path):
+    parser = _parser()
+    parser.cfg = SimpleNamespace(cache_dir=tmp_path, max_duration=3600)
+    parser.downloader = SimpleNamespace()
+    parser.headers = {}
+    (tmp_path / "BV1xx411c7mD-1.mp4").write_bytes(b"video")
+
+    async def fake_get_video(**_kwargs):
+        return _AISummaryFailingVideo()
+
+    parser._get_video = fake_get_video
+
+    result = await parser.parse_video(bvid="BV1xx411c7mD")
+
+    assert result.title == "title"
+    assert result.extra["info"] == "哔哩哔哩 cookie 未配置或失效, 无法使用 AI 总结"
+    assert len(result.video_contents) == 1
+    assert await result.video_contents[0].get_path() == tmp_path / "BV1xx411c7mD-1.mp4"

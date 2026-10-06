@@ -141,7 +141,7 @@ class BilibiliParser(BaseParser):
             page_num (int): 页码
         """
 
-        from .video import AIConclusion, VideoInfo
+        from .video import VideoInfo
 
         video = await self._get_video(bvid=bvid, avid=avid)
         # 转换为 msgspec struct
@@ -153,14 +153,7 @@ class BilibiliParser(BaseParser):
         # 处理分 p
         page_info = video_info.extract_info_with_page(page_num)
 
-        # 获取 AI 总结
-        if self.login._credential:
-            cid = await video.get_cid(page_info.index)
-            ai_conclusion = await video.get_ai_conclusion(cid)
-            ai_conclusion = convert(ai_conclusion, AIConclusion)
-            ai_summary = ai_conclusion.summary
-        else:
-            ai_summary: str = "哔哩哔哩 cookie 未配置或失效, 无法使用 AI 总结"
+        ai_summary = await self._get_ai_summary(video, page_info.index)
 
         url = f"https://bilibili.com/{video_info.bvid}"
         url += f"?p={page_info.index + 1}" if page_info.index > 0 else ""
@@ -207,6 +200,27 @@ class BilibiliParser(BaseParser):
             contents=[video_content],
             extra={"info": ai_summary},
         )
+
+    async def _get_ai_summary(self, video: Video, page_index: int) -> str:
+        """获取 AI 总结；失败时不阻断视频解析。"""
+        from .video import AIConclusion
+
+        unavailable = "哔哩哔哩 cookie 未配置或失效, 无法使用 AI 总结"
+        credential = getattr(video, "credential", None)
+        if not credential or not credential.has_sessdata():
+            return unavailable
+
+        try:
+            cid = await video.get_cid(page_index)
+            ai_conclusion = await video.get_ai_conclusion(cid)
+            ai_conclusion = convert(ai_conclusion, AIConclusion)
+            return ai_conclusion.summary
+        except Exception as exc:
+            logger.warning(
+                "[bilibili] AI summary unavailable, continue without summary: %s",
+                exc,
+            )
+            return unavailable
 
     async def parse_dynamic(self, dynamic_id: int):
         """解析动态信息
@@ -493,4 +507,3 @@ class BilibiliParser(BaseParser):
         if not isinstance(audio_stream, audio_stream_cls):
             audio_stream = None
         return video_stream, audio_stream
-
