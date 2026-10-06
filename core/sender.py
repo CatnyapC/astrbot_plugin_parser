@@ -27,6 +27,7 @@ from .data import (
     FileContent,
     GraphicsContent,
     ImageContent,
+    MediaContent,
     ParseResult,
     SendGroup,
     TextContent,
@@ -35,6 +36,7 @@ from .data import (
 from .exception import (
     DownloadException,
     DownloadLimitException,
+    DurationLimitException,
     SizeLimitException,
     ZeroSizeException,
 )
@@ -465,6 +467,9 @@ class MessageSender:
         for cont in plan["heavy"]:
             try:
                 path: Path = await cont.get_path()
+            except DurationLimitException:
+                segs.append(Plain(self._duration_limit_tip(cont)))
+                continue
             except SizeLimitException:
                 segs.append(Plain("此项媒体超过大小限制"))
                 continue
@@ -487,6 +492,15 @@ class MessageSender:
                     segs.append(File(name=path.name, file=self._to_file_uri(path)))
 
         return segs
+
+    @staticmethod
+    def _duration_limit_tip(cont: MediaContent) -> str:
+        duration = getattr(cont, "duration", 0) or 0
+        if duration > 0:
+            minutes = int(duration) // 60
+            seconds = int(duration) % 60
+            return f"视频过长（{minutes}:{seconds:02d}）无法发送"
+        return "视频过长，无法发送"
 
     def _merge_segments_if_needed(
         self,

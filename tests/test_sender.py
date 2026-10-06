@@ -16,6 +16,7 @@ from core.data import (
     VideoContent,
 )
 from core.debounce import Debouncer
+from core.exception import DurationLimitException
 from core.sender import MessageSender
 
 
@@ -311,6 +312,31 @@ def test_build_segments_keeps_dynamic_mp4_as_video(tmp_path):
 
     assert len(segs) == 1
     assert isinstance(segs[0], Video)
+
+
+def test_build_segments_reports_video_duration_limit():
+    sender = build_sender()
+
+    async def failing_path():
+        raise DurationLimitException
+
+    async def build():
+        task = __import__("asyncio").create_task(failing_path())
+        return await sender._build_segments(
+            object(),
+            {
+                "render_card": False,
+                "force_merge": False,
+                "light": [],
+                "heavy": [VideoContent(task, duration=2713)],
+            },
+        )
+
+    segs = __import__("asyncio").run(build())
+
+    assert len(segs) == 1
+    assert isinstance(segs[0], Plain)
+    assert segs[0].text == "视频过长（45:13）无法发送"
 
 
 def test_resource_debounce_marks_only_after_success():
