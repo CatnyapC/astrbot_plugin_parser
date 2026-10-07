@@ -7,7 +7,7 @@ from astrbot.api import logger
 from astrbot.api.event import filter
 from astrbot.api.star import Context, Star
 from astrbot.core import AstrBotConfig
-from astrbot.core.message.components import At, Image, Json
+from astrbot.core.message.components import At, Image, Json, Plain, Reply
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
@@ -23,7 +23,7 @@ from .core.parsers import BaseParser, BilibiliParser
 from .core.render import Renderer
 from .core.sender import MessageSender
 from .core.utils import extract_json_url
-from .core.video_slice import VideoSliceCacheIndex, VideoSliceCommandService
+from .core.video_slice import VideoSliceCacheIndex, VideoSliceCommandService, _event_raw_id
 
 
 class ParserPlugin(Star):
@@ -391,4 +391,6 @@ class ParserPlugin(Star):
         if result.status == "ignored" or result.sent:
             return
         if result.message:
-            yield event.plain_result(result.message)
+            raw_id = _event_raw_id(event)
+            chain = [Reply(id=raw_id)] if raw_id else []
+            yield event.chain_result([*chain, Plain(result.message)])

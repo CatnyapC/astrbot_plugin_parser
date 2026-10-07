@@ -12,6 +12,7 @@ from uuid import uuid4
 from PIL import Image as PILImage
 from PIL import ImageOps
 
+from .video_slice import _event_raw_id
 from .data import ImageContent, ParseResult, Platform
 
 PARSER_IMAGE_PLATFORM = Platform(name="parserimg", display_name="Parser Image")
@@ -117,6 +118,7 @@ class ImageStitchCommandService:
             return ImageStitchResult(status="error", message=f"parserimg stitch 失败: {exc}")
         result = ParseResult(
             platform=PARSER_IMAGE_PLATFORM,
+            extra={"reply_raw_id": _event_raw_id(event)},
             contents=[ImageContent(output_path, source_key=f"parserimg:{output_path.name}")],
         )
         sent = await self.sender.send_parse_result(event, result)
