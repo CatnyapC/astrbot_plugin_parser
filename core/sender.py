@@ -34,6 +34,7 @@ from .data import (
     VideoContent,
 )
 from .exception import (
+    AuthCookieException,
     DownloadException,
     DownloadLimitException,
     DurationLimitException,
@@ -449,6 +450,9 @@ class MessageSender:
                 path: Path = await cont.get_path()
             except (DownloadLimitException, ZeroSizeException):
                 continue
+            except AuthCookieException as exc:
+                segs.append(Plain(exc.message))
+                continue
             except DownloadException:
                 if self.cfg.show_download_fail_tip:
                     segs.append(Plain("此项媒体下载失败"))
@@ -475,6 +479,9 @@ class MessageSender:
                 continue
             except SizeLimitException:
                 segs.append(Plain("此项媒体超过大小限制"))
+                continue
+            except AuthCookieException as exc:
+                segs.append(Plain(exc.message))
                 continue
             except DownloadException:
                 if self.cfg.show_download_fail_tip:

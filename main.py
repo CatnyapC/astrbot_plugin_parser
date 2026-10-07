@@ -7,7 +7,7 @@ from astrbot.api import logger
 from astrbot.api.event import filter
 from astrbot.api.star import Context, Star
 from astrbot.core import AstrBotConfig
-from astrbot.core.message.components import At, Image, Json
+from astrbot.core.message.components import At, Image, Json, Plain
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
@@ -18,6 +18,7 @@ from .core.clean import CacheCleaner
 from .core.config import PluginConfig
 from .core.debounce import Debouncer
 from .core.download import Downloader
+from .core.exception import AuthCookieException
 from .core.image_stitch import ImageStitchCacheIndex, ImageStitchCommandService
 from .core.parsers import BaseParser, BilibiliParser
 from .core.render import Renderer
@@ -353,7 +354,11 @@ class ParserPlugin(Star):
             return
 
         # 解析
-        parse_res = await parser.parse(keyword, searched)
+        try:
+            parse_res = await parser.parse(keyword, searched)
+        except AuthCookieException as exc:
+            await event.send(event.chain_result([Plain(exc.message)]))
+            return
 
         # 基于资源ID防抖
         resource_id = parse_res.get_resource_id()

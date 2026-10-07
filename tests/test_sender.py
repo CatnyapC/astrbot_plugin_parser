@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,7 +17,7 @@ from core.data import (
     VideoContent,
 )
 from core.debounce import Debouncer
-from core.exception import DurationLimitException
+from core.exception import AuthCookieException, DurationLimitException
 from core.sender import MessageSender
 
 
@@ -358,6 +359,31 @@ def test_build_segments_keeps_dynamic_mp4_as_video(tmp_path):
 
     assert len(segs) == 1
     assert isinstance(segs[0], Video)
+
+
+def test_build_segments_reports_auth_cookie_error_even_without_fail_tip():
+    sender = build_sender()
+    sender.cfg.show_download_fail_tip = False
+
+    async def fail_download():
+        raise AuthCookieException("YouTube 需要更新登录 cookies，请重新导出 YouTube cookies 后再试")
+
+    async def run_build():
+        return await sender._build_segments(
+            object(),
+            {
+                "render_card": False,
+                "force_merge": False,
+                "light": [],
+                "heavy": [VideoContent(asyncio.create_task(fail_download()))],
+            },
+        )
+
+    segs = asyncio.run(run_build())
+
+    assert len(segs) == 1
+    assert isinstance(segs[0], Plain)
+    assert "YouTube 需要更新登录 cookies" in segs[0].text
 
 
 def test_build_segments_reports_video_duration_limit():

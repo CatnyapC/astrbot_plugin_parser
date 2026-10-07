@@ -15,6 +15,7 @@ from astrbot.api import logger
 from .config import PluginConfig
 from .constants import COMMON_HEADER
 from .exception import (
+    AuthCookieException,
     DownloadException,
     DurationLimitException,
     ParseException,
@@ -25,6 +26,23 @@ from .utils import LimitedSizeDict, generate_file_name, merge_av, safe_unlink
 
 P = ParamSpec("P")
 T = TypeVar("T")
+
+YTDLP_AUTH_COOKIE_TIP = "YouTube 需要更新登录 cookies，请重新导出 YouTube cookies 后再试"
+
+
+def _is_ytdlp_auth_cookie_error(message: str) -> bool:
+    text = message.lower()
+    return any(
+        marker in text
+        for marker in (
+            "sign in to confirm",
+            "use --cookies",
+            "cookies-from-browser",
+            "account cookies are no longer valid",
+            "cookies are no longer valid",
+            "rotated in the browser",
+        )
+    )
 
 
 def auto_task(func: Callable[P, Coroutine[Any, Any, T]]) -> Callable[P, Task[T]]:
@@ -109,6 +127,13 @@ class Downloader:
         if format:
             opts["format"] = format
         return opts
+
+    @staticmethod
+    def _raise_ytdlp_download_exception(exc: Exception) -> None:
+        message = str(exc)
+        if _is_ytdlp_auth_cookie_error(message):
+            raise AuthCookieException(YTDLP_AUTH_COOKIE_TIP) from exc
+        raise DownloadException("yt-dlp 媒体下载失败") from exc
 
     @auto_task
     async def streamd(
@@ -312,10 +337,13 @@ class Downloader:
             skip_download=True,
             quiet=True,
         )
-        with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-            raw = await to_thread(ydl.extract_info, url, download=False)
-            if not raw:
-                raise ParseException("获取视频信息失败")
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
+                raw = await to_thread(ydl.extract_info, url, download=False)
+                if not raw:
+                    raise ParseException("获取视频信息失败")
+        except yt_dlp.utils.DownloadError as exc:
+            self._raise_ytdlp_download_exception(exc)
         info = convert(raw, VideoInfo)
         self.info_cache[url] = info
         return info
@@ -338,11 +366,14 @@ class Downloader:
             quiet=True,
         )
 
-        with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-            raw = await to_thread(ydl.extract_info, url, download=False)
-            if not isinstance(raw, dict):
-                raise ParseException("yt-dlp 返回数据异常")
-            return raw  # type: ignore
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
+                raw = await to_thread(ydl.extract_info, url, download=False)
+                if not isinstance(raw, dict):
+                    raise ParseException("yt-dlp 返回数据异常")
+                return raw  # type: ignore
+        except yt_dlp.utils.DownloadError as exc:
+            self._raise_ytdlp_download_exception(exc)
 
     @auto_task
     async def ytdlp_download_video(
@@ -384,8 +415,11 @@ class Downloader:
         if node:
             opts["js_runtimes"] = {"node": {}}
 
-        with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-            await to_thread(ydl.download, [url])
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
+                await to_thread(ydl.download, [url])
+        except yt_dlp.utils.DownloadError as exc:
+            self._raise_ytdlp_download_exception(exc)
         return video_path
 
     @auto_task
@@ -423,8 +457,11 @@ class Downloader:
         if node:
             opts["js_runtimes"] = {"node": {}}
 
-        with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-            await to_thread(ydl.download, [url])
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
+                await to_thread(ydl.download, [url])
+        except yt_dlp.utils.DownloadError as exc:
+            self._raise_ytdlp_download_exception(exc)
         if video_path.exists():
             return video_path
 
@@ -466,6 +503,9 @@ class Downloader:
             ],
         })
 
-        with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
-            await to_thread(ydl.download, [url])
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:  # type: ignore
+                await to_thread(ydl.download, [url])
+        except yt_dlp.utils.DownloadError as exc:
+            self._raise_ytdlp_download_exception(exc)
         return audio_path
