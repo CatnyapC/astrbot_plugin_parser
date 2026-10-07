@@ -574,6 +574,17 @@ class MessageSender:
         if not segs:
             return False
 
+        def is_onebot_send_ack_timeout(exc: Exception) -> bool:
+            text = str(exc)
+            retcode = getattr(exc, "retcode", None)
+            return (
+                (retcode == 1200 or "retcode=1200" in text or "'retcode': 1200" in text)
+                and "Timeout" in text
+                and "NTEvent" in text
+                and "sendMsg" in text
+                and "onMsgInfoListUpdate" in text
+            )
+
         try:
             await self._send_chain(event, segs)
             await self._archive_sent_chain(
@@ -590,6 +601,13 @@ class MessageSender:
                 seg_meta = self._collect_seg_meta(segs)
                 logger.error(f"发送解析结果失败： error={e}, segments={seg_meta}")
                 return False
+            if is_onebot_send_ack_timeout(e):
+                seg_meta = self._collect_seg_meta(segs)
+                logger.warning(
+                    "发送解析结果收到 OneBot sendMsg ACK 超时，停止重试以避免重复投递: "
+                    f"segments={seg_meta}"
+                )
+                return True
             retry_segs = await self._normalize_image_segments_for_retry(segs)
             if retry_segs is not None:
                 try:
@@ -610,6 +628,13 @@ class MessageSender:
                     await self._record_image_stitch_cache(event, group)
                     return True
                 except Exception as retry_exc:
+                    if is_onebot_send_ack_timeout(retry_exc):
+                        seg_meta = self._collect_seg_meta(retry_segs)
+                        logger.warning(
+                            "发送解析结果重试收到 OneBot sendMsg ACK 超时，停止重试以避免重复投递: "
+                            f"segments={seg_meta}"
+                        )
+                        return True
                     e = retry_exc
                     segs = retry_segs
             retry_segs = await self._perturb_image_segments_for_retry(segs)
@@ -632,6 +657,13 @@ class MessageSender:
                     await self._record_image_stitch_cache(event, group)
                     return True
                 except Exception as retry_exc:
+                    if is_onebot_send_ack_timeout(retry_exc):
+                        seg_meta = self._collect_seg_meta(retry_segs)
+                        logger.warning(
+                            "发送解析结果二次重试收到 OneBot sendMsg ACK 超时，停止重试以避免重复投递: "
+                            f"segments={seg_meta}"
+                        )
+                        return True
                     e = retry_exc
                     segs = retry_segs
             seg_meta = self._collect_seg_meta(segs)

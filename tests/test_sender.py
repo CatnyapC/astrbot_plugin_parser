@@ -231,6 +231,52 @@ def test_send_group_retries_with_normalized_image_after_send_failure():
     assert attempts[1].chain[0] is retried
 
 
+def test_send_group_stops_retry_on_onebot_ack_timeout():
+    sender = build_sender()
+    original = Image("file:////tmp/original.jpg")
+    attempts: list[MessageChain] = []
+    normalize_calls = 0
+
+    class FakeActionFailed(Exception):
+        retcode = 1200
+
+        def __str__(self):
+            return (
+                "ActionFailed retcode=1200 Timeout: NTEvent "
+                "serviceAndMethod:NodeIKernelMsgService/sendMsg "
+                "ListenerName:NodeIKernelMsgListener/onMsgInfoListUpdate EventRet: {}"
+            )
+
+    async def fake_send(chain):
+        attempts.append(chain)
+        raise FakeActionFailed()
+
+    async def fake_build_segments(_result, _plan):
+        return [original]
+
+    async def fake_normalize(_segs):
+        nonlocal normalize_calls
+        normalize_calls += 1
+        return [Image("file:////tmp/retried.jpg")]
+
+    event = DummyEvent()
+    event.send = fake_send
+    sender._build_send_plan = lambda *_args, **_kwargs: {
+        "preview_card": False,
+        "force_merge": False,
+    }
+    sender._build_segments = fake_build_segments
+    sender._normalize_image_segments_for_retry = fake_normalize
+    group = SimpleNamespace(contents=[], force_merge=None, render_card=None)
+
+    ok = __import__("asyncio").run(sender._send_group(event, object(), group))
+
+    assert ok is True
+    assert len(attempts) == 1
+    assert attempts[0].chain[0] is original
+    assert normalize_calls == 0
+
+
 def test_send_group_retries_with_perturbed_png_after_second_failure():
     sender = build_sender()
     original = Image("file:////tmp/original.jpg")
