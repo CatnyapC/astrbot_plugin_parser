@@ -18,6 +18,7 @@ from .core.clean import CacheCleaner
 from .core.config import PluginConfig
 from .core.debounce import Debouncer
 from .core.download import Downloader
+from .core.image_stitch import ImageStitchCacheIndex, ImageStitchCommandService
 from .core.parsers import BaseParser, BilibiliParser
 from .core.render import Renderer
 from .core.sender import MessageSender
@@ -40,17 +41,24 @@ class ParserPlugin(Star):
         self.video_slice_cache = VideoSliceCacheIndex(
             persist_path=self.cfg.data_dir / "video_slice_index.json"
         )
+        self.image_stitch_cache = ImageStitchCacheIndex()
         # 消息发送器
         self.sender = MessageSender(
             self.cfg,
             self.renderer,
             context=context,
             video_slice_cache=self.video_slice_cache,
+            image_stitch_cache=self.image_stitch_cache,
         )
         self.video_slice_service = VideoSliceCommandService(
             cfg=self.cfg,
             sender=self.sender,
             cache_index=self.video_slice_cache,
+        )
+        self.image_stitch_service = ImageStitchCommandService(
+            cfg=self.cfg,
+            sender=self.sender,
+            cache_index=self.image_stitch_cache,
         )
         # 缓存清理器
         self.cleaner = CacheCleaner(self.cfg, video_slice_cache=self.video_slice_cache)
@@ -291,7 +299,8 @@ class ParserPlugin(Star):
 
         if not text:
             return
-        if text.strip().lstrip("/").startswith("parserclip "):
+        command_text = text.strip().lstrip("/")
+        if command_text.startswith("parserclip ") or command_text.startswith("parserimg "):
             return
 
         self_id = event.get_self_id()
@@ -370,6 +379,15 @@ class ParserPlugin(Star):
     async def parserclip_command(self, event: AstrMessageEvent):
         """Reviewed parser cache video slice command."""
         result = await self.video_slice_service.handle(event)
+        if result.status == "ignored" or result.sent:
+            return
+        if result.message:
+            yield event.plain_result(result.message)
+
+    @filter.command("parserimg", alias={"/parserimg"})
+    async def parserimg_command(self, event: AstrMessageEvent):
+        """Parser image commands."""
+        result = await self.image_stitch_service.handle(event)
         if result.status == "ignored" or result.sent:
             return
         if result.message:

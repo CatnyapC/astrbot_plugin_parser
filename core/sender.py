@@ -40,6 +40,7 @@ from .exception import (
     SizeLimitException,
     ZeroSizeException,
 )
+from .image_stitch import ImageStitchCacheIndex
 from .render import Renderer
 from .video_slice import VideoSliceCacheIndex, record_video_slice_cache_from_group
 
@@ -69,12 +70,14 @@ class MessageSender:
         renderer: Renderer,
         context=None,
         video_slice_cache: VideoSliceCacheIndex | None = None,
+        image_stitch_cache: ImageStitchCacheIndex | None = None,
     ):
         self.cfg = config
         self.renderer = renderer
         self.context = context
         self._rand = SystemRandom()
         self.video_slice_cache = video_slice_cache
+        self.image_stitch_cache = image_stitch_cache
 
     def _to_file_uri(self, path: Path) -> str:
         path = path.resolve()
@@ -580,6 +583,7 @@ class MessageSender:
                 raw_json_extra={"force_merge": bool(plan["force_merge"])},
             )
             await self._record_video_slice_cache(event, group)
+            await self._record_image_stitch_cache(event, group)
             return True
         except Exception as e:
             if isinstance(e, TimeoutError):
@@ -603,6 +607,7 @@ class MessageSender:
                         },
                     )
                     await self._record_video_slice_cache(event, group)
+                    await self._record_image_stitch_cache(event, group)
                     return True
                 except Exception as retry_exc:
                     e = retry_exc
@@ -624,6 +629,7 @@ class MessageSender:
                         },
                     )
                     await self._record_video_slice_cache(event, group)
+                    await self._record_image_stitch_cache(event, group)
                     return True
                 except Exception as retry_exc:
                     e = retry_exc
@@ -636,6 +642,21 @@ class MessageSender:
         if self.video_slice_cache is None:
             return
         await record_video_slice_cache_from_group(self.video_slice_cache, event=event, group=group)
+
+    async def _record_image_stitch_cache(self, event: AstrMessageEvent, group: SendGroup) -> None:
+        if self.image_stitch_cache is None:
+            return
+        group_id = event.get_group_id()
+        if not group_id:
+            return
+        paths: list[Path] = []
+        for cont in group.contents:
+            if isinstance(cont, ImageContent):
+                try:
+                    paths.append(await cont.get_path())
+                except DownloadException:
+                    continue
+        self.image_stitch_cache.record(group_id=str(group_id), paths=paths)
 
     @staticmethod
     def _collect_seg_meta(segs: list[BaseMessageComponent]) -> list[dict[str, str]]:
