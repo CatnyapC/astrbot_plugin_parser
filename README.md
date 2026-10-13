@@ -68,6 +68,7 @@ _✨ 链接解析器 ✨_
 | 开启解析 |      ADMIN            |     开启当前会话的解析功能      |
 | 关闭解析 |      ADMIN            |    关闭当前会话的解析功能      |
 |  blogin  |      ADMIN           |   扫码获取 B 站凭证 |
+| `/parserclip gif --source latest\|reply --cycle off\|auto` | 群成员 | 视频转 GIF；auto 提取最短可靠重复周期，详见 [说明](docs/video_gif.md) |
 
 ---
 

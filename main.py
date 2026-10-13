@@ -7,7 +7,7 @@ from astrbot.api import logger
 from astrbot.api.event import filter
 from astrbot.api.star import Context, Star
 from astrbot.core import AstrBotConfig
-from astrbot.core.message.components import At, Image, Json, Plain
+from astrbot.core.message.components import At, Image, Json, Plain, Reply
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
@@ -24,7 +24,12 @@ from .core.parsers import BaseParser, BilibiliParser
 from .core.render import Renderer
 from .core.sender import MessageSender
 from .core.utils import extract_json_url
-from .core.video_slice import VideoSliceCacheIndex, VideoSliceCommandService
+from .core.video_gif import VideoGifCommandService
+from .core.video_slice import (
+    VideoSliceCacheIndex,
+    VideoSliceCommandService,
+    _event_raw_id,
+)
 
 
 class ParserPlugin(Star):
@@ -56,6 +61,7 @@ class ParserPlugin(Star):
             sender=self.sender,
             cache_index=self.video_slice_cache,
         )
+        self.video_gif_service = VideoGifCommandService(self.video_slice_service)
         self.image_stitch_service = ImageStitchCommandService(
             cfg=self.cfg,
             sender=self.sender,
@@ -382,12 +388,16 @@ class ParserPlugin(Star):
 
     @filter.command("parserclip", alias={"/parserclip"})
     async def parserclip_command(self, event: AstrMessageEvent):
-        """Reviewed parser cache video slice command."""
-        result = await self.video_slice_service.handle(event)
+        """Reviewed parser video commands."""
+        result = await self.video_gif_service.handle(event)
+        if result.status == "ignored":
+            result = await self.video_slice_service.handle(event)
         if result.status == "ignored" or result.sent:
             return
         if result.message:
-            yield event.plain_result(result.message)
+            raw_id = _event_raw_id(event)
+            chain = [Reply(id=raw_id)] if raw_id else []
+            yield event.chain_result([*chain, Plain(result.message)])
 
     @filter.command("parserimg", alias={"/parserimg"})
     async def parserimg_command(self, event: AstrMessageEvent):
@@ -396,4 +406,6 @@ class ParserPlugin(Star):
         if result.status == "ignored" or result.sent:
             return
         if result.message:
-            yield event.plain_result(result.message)
+            raw_id = _event_raw_id(event)
+            chain = [Reply(id=raw_id)] if raw_id else []
+            yield event.chain_result([*chain, Plain(result.message)])

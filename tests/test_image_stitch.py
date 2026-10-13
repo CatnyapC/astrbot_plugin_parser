@@ -3,9 +3,10 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from PIL import Image as PILImage
 
-from astrbot.core.message.components import Plain
+from astrbot.core.message.components import Plain, Reply
 from astrbot.core.message.message_event_result import MessageChain
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -23,6 +24,7 @@ class DummyEvent:
     def __init__(self, text: str = "/parserimg stitch", group_id: str = "g1"):
         self.message_str = text
         self.group_id = group_id
+        self.message_obj = SimpleNamespace(raw_message={"raw_id": "command-42"})
         self.sent: list[MessageChain] = []
 
     def get_group_id(self) -> str:
@@ -69,7 +71,8 @@ def test_parse_parserimg_stitch_accepts_direction_alias() -> None:
     assert cmd.direction == "vertical"
 
 
-def test_sender_records_successful_image_group_for_stitch(tmp_path: Path) -> None:
+@pytest.mark.parametrize("force_merge", [False, True])
+def test_sender_records_successful_image_group_for_stitch(tmp_path: Path, force_merge: bool) -> None:
     cache = ImageStitchCacheIndex()
     sender = MessageSender(
         config=SimpleNamespace(),
@@ -83,7 +86,7 @@ def test_sender_records_successful_image_group_for_stitch(tmp_path: Path) -> Non
 
     sender._build_send_plan = lambda *_args, **_kwargs: {
         "preview_card": False,
-        "force_merge": False,
+        "force_merge": force_merge,
     }
 
     async def fake_build_segments(_result, _plan):
@@ -92,9 +95,12 @@ def test_sender_records_successful_image_group_for_stitch(tmp_path: Path) -> Non
     sender._build_segments = fake_build_segments
     group = SendGroup(contents=[ImageContent(first), ImageContent(second)])
 
-    ok = asyncio.run(sender._send_group(DummyEvent(), object(), group))
+    event = DummyEvent()
+    ok = asyncio.run(sender._send_group(event, SimpleNamespace(extra={"reply_raw_id": "command-42"}), group))
 
     assert ok is True
+    assert isinstance(event.sent[0].chain[0], Reply)
+    assert event.sent[0].chain[0].id == "command-42"
     entry = cache.latest("g1")
     assert entry is not None
     assert entry.paths == (first, second)
@@ -118,6 +124,7 @@ def test_parserimg_stitch_default_uses_latest_group_horizontally(tmp_path: Path)
 
     assert result.sent is True
     assert len(sender.results) == 1
+    assert sender.results[0].extra["reply_raw_id"] == "command-42"
     output = sender.results[0].contents[0].path_task
     assert output.name.startswith("parserimg_stitch_")
     with PILImage.open(output) as img:

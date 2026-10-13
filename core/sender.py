@@ -16,6 +16,7 @@ from astrbot.core.message.components import (
     Nodes,
     Plain,
     Record,
+    Reply,
     Video,
 )
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
@@ -577,7 +578,10 @@ class MessageSender:
         await self._send_preview_card(event, result, plan)
 
         segs = await self._build_segments(result, plan)
+        reply_raw_id = str((getattr(result, "extra", {}) or {}).get("reply_raw_id") or "").strip()
         segs = self._merge_segments_if_needed(event, segs, plan["force_merge"])
+        if segs and reply_raw_id:
+            segs.insert(0, Reply(id=reply_raw_id))
         if not segs:
             return False
 
