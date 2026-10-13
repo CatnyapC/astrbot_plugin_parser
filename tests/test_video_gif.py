@@ -176,6 +176,8 @@ def test_failed_outputs_are_removed(tmp_path, failure):
                 "",
             )
         output = Path(cmd[-1])
+        assert "-fs" not in cmd
+        assert "-t" not in cmd
         if failure == "ffmpeg_timeout":
             output.write_bytes(b"partial")
             return 124, "", "timeout"

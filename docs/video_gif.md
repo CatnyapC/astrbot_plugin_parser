@@ -17,8 +17,10 @@ quoted video to a real, infinitely looping GIF image without audio. Defaults:
   nonperiodic content returns `cycle_not_found`.
 
 Fixed limits: input 60 seconds / 100 MiB; GIF 12 FPS, longest side at most 480
-pixels, output at most 10 MiB and the configured media size limit. Process
-timeout is 120 seconds; ffprobe and native downloads retain their existing slice
+pixels, output at most 10 MiB and the configured media size limit.
+Output size is checked after full encoding; oversized GIFs are removed rather
+than accepting an early truncated result. Temporary output can exceed 10 MiB.
+Process timeout is 120 seconds; ffprobe and native downloads retain their existing slice
 limits. The shared slice/GIF allowance is 30 attempts per hour. Duplicate command
 raw IDs are suppressed after successful send; GIF requests execute serially.
 Temporary samples and failed outputs are removed. Successful GIFs use the

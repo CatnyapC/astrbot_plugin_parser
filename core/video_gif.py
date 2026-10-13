@@ -196,8 +196,6 @@ class VideoGifCommandService:
                 f"fps={GIF_FPS},scale='min(480,iw)':'min(480,ih)':force_original_aspect_ratio=decrease,split[a][b];[a]palettegen[p];[b][p]paletteuse",
                 "-loop",
                 "0",
-                "-fs",
-                str(GIF_MAX_OUTPUT_SIZE + 1),
                 str(output),
             ]
             await self._ffmpeg(args)
