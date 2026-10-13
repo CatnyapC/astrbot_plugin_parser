@@ -27,7 +27,8 @@ Temporary samples and failed outputs are removed. Successful GIFs use the
 existing cache cleanup lifecycle.
 
 Cycle detection samples 32x32 grayscale frames at 12 FPS. It supports periods
-of at least 0.5 seconds at 1/12-second resolution. Low-contrast, very short,
+of at least 0.25 seconds at 1/12-second resolution, including two source frames
+displayed for 125 ms each. Low-contrast, very short,
 off-grid or significantly edited repeats can be rejected. It does not infer
 semantic repetition or remove titles/intros.
 
@@ -47,3 +48,5 @@ failures use `parserclip gif 失败: <reason>`, including `invalid_arguments`,
 Regression tests include synthetic repeat/static/nonperiodic samples, strict
 quote selection, command validation, permission/duration rejection, native
 failure receipts, and real ffmpeg-generated GIFs sent through the shared sender.
+An 8 FPS AB source loop produces three 12 FPS samples with GIF delays of
+80/90/80 ms: one complete 250 ms cycle, then infinite playback.

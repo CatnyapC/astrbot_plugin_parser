@@ -60,9 +60,9 @@ def parse_parserclip_gif_command(text: str) -> dict[str, str] | None:
 
 
 def find_cycle_frames(frames: np.ndarray) -> int:
-    # shortcut: 12 FPS sampling supports loops >= 0.5s; use native-frame analysis for shorter loops.
+    # shortcut: 12 FPS sampling supports loops >= 0.25s; use native-frame analysis for shorter loops.
     frames = np.asarray(frames, dtype=np.float32).reshape(len(frames), -1)
-    for period in range(GIF_FPS // 2, len(frames) // 2 + 1):
+    for period in range(GIF_FPS // 4, len(frames) // 2 + 1):
         cycle = frames[:period]
         contrast = np.abs(cycle - cycle[0]).mean(axis=1)
         if np.quantile(contrast, 0.8) < 12:
@@ -73,7 +73,7 @@ def find_cycle_frames(frames: np.ndarray) -> int:
             continue
         transitions = np.abs(cycle[1:] - cycle[:-1]).mean(axis=1)
         seam = np.abs(cycle[-1] - cycle[0]).mean()
-        if seam > np.quantile(transitions, 0.95) + 2:
+        if seam > transitions.max() + 2:
             continue
         return period
     raise ValueError("cycle_not_found")
@@ -183,7 +183,7 @@ class VideoGifCommandService:
                 frames = np.frombuffer(samples.read_bytes(), dtype=np.uint8).reshape(
                     -1, 32 * 32
                 )
-                if len(frames) < GIF_FPS:
+                if len(frames) < GIF_FPS // 2:
                     raise ValueError("cycle_not_found")
                 duration = await asyncio.to_thread(find_cycle_frames, frames)
                 duration /= GIF_FPS

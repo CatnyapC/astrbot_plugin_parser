@@ -108,6 +108,11 @@ def test_cycle_detects_shortest_complete_repeat():
     assert find_cycle_frames(np.tile(cycle_frames(), (3, 1))) == 12
 
 
+def test_cycle_accepts_two_frames_at_quarter_second():
+    sampled = np.repeat(np.array([32, 32, 224], dtype=np.uint8)[:, None], 1024, axis=1)
+    assert find_cycle_frames(np.tile(sampled, (2, 1))) == 3
+
+
 @pytest.mark.parametrize(
     "frames",
     [
@@ -294,11 +299,18 @@ def test_failure_receipt_replies_to_command():
 @pytest.mark.skipif(
     not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="ffmpeg required"
 )
-@pytest.mark.parametrize("cycle", ["off", "auto"])
-def test_real_gif_and_native_reply(tmp_path, cycle):
+@pytest.mark.parametrize(
+    "cycle,two_frames", [("off", False), ("auto", False), ("auto", True)]
+)
+def test_real_gif_and_native_reply(tmp_path, cycle, two_frames):
     from core.video_slice import _run_process
 
-    for index, frame in enumerate(np.tile(cycle_frames(), (3, 1))):
+    frames = np.tile(cycle_frames(), (3, 1))
+    if two_frames:
+        frames = np.repeat(
+            np.tile(np.array([32, 224], dtype=np.uint8), 8)[:, None], 1024, axis=1
+        )
+    for index, frame in enumerate(frames):
         PILImage.fromarray(frame.reshape(32, 32)).save(
             tmp_path / f"frame{index:02d}.png"
         )
@@ -311,7 +323,7 @@ def test_real_gif_and_native_reply(tmp_path, cycle):
                 "-v",
                 "error",
                 "-framerate",
-                str(GIF_FPS),
+                str(8 if two_frames else GIF_FPS),
                 "-i",
                 str(tmp_path / "frame%02d.png"),
                 "-c:v",
@@ -340,7 +352,13 @@ def test_real_gif_and_native_reply(tmp_path, cycle):
     with PILImage.open(tmp_path / result.output_name) as image:
         assert image.format == "GIF"
         assert image.info["loop"] == 0
-        assert image.n_frames == (36 if cycle == "off" else 12)
+        assert image.n_frames == (3 if two_frames else 36 if cycle == "off" else 12)
+        if two_frames:
+            duration_ms = 0
+            for frame_index in range(image.n_frames):
+                image.seek(frame_index)
+                duration_ms += image.info["duration"]
+            assert abs(duration_ms - 250) <= 20
     assert isinstance(event.sent[0].chain[0], Reply)
     assert event.sent[0].chain[0].id == "command-42"
     assert isinstance(event.sent[0].chain[1], Image)
