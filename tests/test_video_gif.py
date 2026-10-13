@@ -113,6 +113,12 @@ def test_cycle_accepts_two_frames_at_quarter_second():
     assert find_cycle_frames(np.tile(sampled, (2, 1))) == 3
 
 
+def test_cycle_accepts_low_contrast_repeat():
+    brightness = (128 + 8 * np.sin(np.arange(8) * 2 * np.pi / 8)).astype(np.uint8)
+    frames = np.repeat(brightness[:, None], 32 * 32, axis=1)
+    assert find_cycle_frames(np.tile(frames, (3, 1))) == 8
+
+
 @pytest.mark.parametrize(
     "frames",
     [

@@ -24,6 +24,7 @@ GIF_FPS = 12
 GIF_MAX_DURATION = 60
 GIF_MAX_INPUT_SIZE = 100 * 1024 * 1024
 GIF_MAX_OUTPUT_SIZE = 10 * 1024 * 1024
+GIF_MIN_CYCLE_CONTRAST = 4.0
 
 
 def parse_parserclip_gif_command(text: str) -> dict[str, str] | None:
@@ -65,7 +66,7 @@ def find_cycle_frames(frames: np.ndarray) -> int:
     for period in range(GIF_FPS // 4, len(frames) // 2 + 1):
         cycle = frames[:period]
         contrast = np.abs(cycle - cycle[0]).mean(axis=1)
-        if np.quantile(contrast, 0.8) < 12:
+        if np.quantile(contrast, 0.8) < GIF_MIN_CYCLE_CONTRAST:
             continue
         errors = np.abs(frames[period:] - frames[:-period]).mean(axis=1)
         tolerance = min(3.0, float(contrast.mean()) * 0.15)
