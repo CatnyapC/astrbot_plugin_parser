@@ -220,6 +220,7 @@ class VideoSliceCacheIndex:
         source: str,
         reply_raw_id: str = "",
         cache_id: str = "",
+        strict_reply: bool = False,
     ) -> tuple[VideoSliceCacheEntry | None, str]:
         group = str(group_id or "").strip()
         bucket = list(self._by_group.get(group) or [])
@@ -237,6 +238,8 @@ class VideoSliceCacheIndex:
         if normalized_source == "reply":
             reply = str(reply_raw_id or "").strip()
             if not reply:
+                if strict_reply:
+                    return None, "reply_required"
                 if len(bucket) == 1:
                     return bucket[0], ""
                 return None, "reply_required"
@@ -249,6 +252,8 @@ class VideoSliceCacheIndex:
                 return matches[0], ""
             if len(matches) > 1:
                 return None, "source_ambiguous"
+            if strict_reply:
+                return None, "reply_source_not_found"
             fallback_matches = self._recent_parser_sent_output_candidates(bucket)
             if len(fallback_matches) == 1:
                 return fallback_matches[0], ""
@@ -1053,7 +1058,11 @@ def _event_raw_id(event: Any) -> str:
             value = str(raw_obj.get(key) or "").strip()
             if value:
                 return value
-    return ""
+    return str(
+        getattr(raw_obj, "message_id", "")
+        or getattr(getattr(event, "message_obj", None), "message_id", "")
+        or ""
+    ).strip()
 
 
 def _path_is_under(path: Path, root: Path) -> bool:

@@ -23,7 +23,12 @@ from .core.parsers import BaseParser, BilibiliParser
 from .core.render import Renderer
 from .core.sender import MessageSender
 from .core.utils import extract_json_url
-from .core.video_slice import VideoSliceCacheIndex, VideoSliceCommandService, _event_raw_id
+from .core.video_gif import VideoGifCommandService
+from .core.video_slice import (
+    VideoSliceCacheIndex,
+    VideoSliceCommandService,
+    _event_raw_id,
+)
 
 
 class ParserPlugin(Star):
@@ -55,6 +60,7 @@ class ParserPlugin(Star):
             sender=self.sender,
             cache_index=self.video_slice_cache,
         )
+        self.video_gif_service = VideoGifCommandService(self.video_slice_service)
         self.image_stitch_service = ImageStitchCommandService(
             cfg=self.cfg,
             sender=self.sender,
@@ -377,12 +383,16 @@ class ParserPlugin(Star):
 
     @filter.command("parserclip", alias={"/parserclip"})
     async def parserclip_command(self, event: AstrMessageEvent):
-        """Reviewed parser cache video slice command."""
-        result = await self.video_slice_service.handle(event)
+        """Reviewed parser video commands."""
+        result = await self.video_gif_service.handle(event)
+        if result.status == "ignored":
+            result = await self.video_slice_service.handle(event)
         if result.status == "ignored" or result.sent:
             return
         if result.message:
-            yield event.plain_result(result.message)
+            raw_id = _event_raw_id(event)
+            chain = [Reply(id=raw_id)] if raw_id else []
+            yield event.chain_result([*chain, Plain(result.message)])
 
     @filter.command("parserimg", alias={"/parserimg"})
     async def parserimg_command(self, event: AstrMessageEvent):
