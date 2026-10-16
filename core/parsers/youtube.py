@@ -72,6 +72,8 @@ class YouTubeParser(BaseParser):
             contents.extend(self.create_image_contents([video_info.thumbnail]))
 
         return self.result(
+            url=url,
+            text=video_info.description or None,
             title=video_info.title,
             author=author,
             contents=contents,
@@ -108,6 +110,8 @@ class YouTubeParser(BaseParser):
             )
 
         return self.result(
+            url=url,
+            text=video_info.description or None,
             title=video_info.title,
             author=author,
             contents=contents,

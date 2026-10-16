@@ -20,6 +20,7 @@ from .core.debounce import Debouncer
 from .core.download import Downloader
 from .core.image_stitch import ImageStitchCacheIndex, ImageStitchCommandService
 from .core.parsers import BaseParser, BilibiliParser
+from .core.receipts import ReceiptOutbox
 from .core.render import Renderer
 from .core.sender import MessageSender
 from .core.utils import extract_json_url
@@ -35,6 +36,7 @@ class ParserPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.cfg = PluginConfig(config, context=context)
+        self.receipt_outbox = ReceiptOutbox(self.cfg, context)
         # 渲染器
         self.renderer = Renderer(self.cfg)
         # 下载器
@@ -79,9 +81,11 @@ class ParserPlugin(Star):
         await asyncio.to_thread(Renderer.load_resources)
         # 注册解析器
         self._register_parser()
+        self.receipt_outbox.start()
 
     async def terminate(self):
         """插件卸载时触发"""
+        await self.receipt_outbox.close()
         # 关下载器里的会话
         await self.downloader.close()
         # 关所有解析器里的会话 (去重后的实例)
@@ -368,8 +372,35 @@ class ParserPlugin(Star):
             return
 
         # 发送
-        if await self.sender.send_parse_result(event, parse_res):
-            self.debouncer.mark_resource(umo, resource_id)
+        before = len(event.get_extra("_sent_message_receipts", []) or [])
+        try:
+            if await self.sender.send_parse_result(event, parse_res):
+                self.debouncer.mark_resource(umo, resource_id)
+        finally:
+            if (
+                self.receipt_outbox.enabled
+                and isinstance(event, AiocqhttpMessageEvent)
+                and group_id
+            ):
+                raw = event.message_obj.raw_message
+                source = {
+                    "group_id": str(group_id),
+                    "user_id": str(user_id),
+                    "raw_id": _event_raw_id(event),
+                    "ts": int(raw["time"]),
+                    "link": link,
+                    "platform_id": event.get_platform_id(),
+                    "bot_id": event.get_self_id(),
+                }
+                receipts = list(event.get_extra("_sent_message_receipts", []) or [])[
+                    before:
+                ]
+                try:
+                    await self.receipt_outbox.enqueue(
+                        event, parse_res, source, receipts
+                    )
+                except Exception:
+                    logger.exception("Parser receipt persistence failed")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("登录B站", alias={"blogin", "登录b站"})
