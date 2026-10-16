@@ -58,7 +58,11 @@ class YouTubeParser(BaseParser):
                 cookiefile=self.cookiejar.cookie_file,
                 headers=self.headers,
                 proxy=self.proxy,
-                format="best[height<=720]/bestvideo[height<=720]+bestaudio/best",
+                format=(
+                    "bestvideo[height<=720][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
+                    "best[height<=720][vcodec^=avc1][acodec^=mp4a]/"
+                    "best[height<=720]/bestvideo[height<=720]+bestaudio/best"
+                ),
                 node=True,
             )
             contents.append(
