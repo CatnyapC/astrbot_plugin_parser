@@ -21,7 +21,7 @@ from .core.download import Downloader
 from .core.exception import AuthCookieException
 from .core.image_stitch import ImageStitchCacheIndex, ImageStitchCommandService
 from .core.parsers import BaseParser, BilibiliParser
-from .core.receipts import ReceiptOutbox, capture_sends
+from .core.receipts import ReceiptOutbox, active_receipt
 from .core.render import Renderer
 from .core.sender import MessageSender
 from .core.utils import extract_json_url
@@ -37,7 +37,7 @@ class ParserPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.cfg = PluginConfig(config, context=context)
-        self.receipt_outbox = ReceiptOutbox(self.cfg, context)
+        self.receipt_outbox = ReceiptOutbox(self.cfg)
         # 渲染器
         self.renderer = Renderer(self.cfg)
         # 下载器
@@ -378,8 +378,7 @@ class ParserPlugin(Star):
             logger.warning(f"[资源防抖] 资源 {resource_id} 在防抖时间内，跳过发送")
             return
 
-        # Capture one invocation's source and exact message-chain ACK hooks.
-        source = None
+        provenance = None
         if (
             self.receipt_outbox.enabled
             and isinstance(event, AiocqhttpMessageEvent)
@@ -395,22 +394,13 @@ class ParserPlugin(Star):
                 "platform_id": event.get_platform_id(),
                 "bot_id": event.get_self_id(),
             }
-        before = len(event.get_extra("_sent_message_receipts", []) or [])
-        with capture_sends(self.receipt_outbox, event, parse_res, source):
-            try:
-                if await self.sender.send_parse_result(event, parse_res):
-                    self.debouncer.mark_resource(umo, resource_id)
-            finally:
-                if source is not None:
-                    receipts = list(
-                        event.get_extra("_sent_message_receipts", []) or []
-                    )[before:]
-                    try:
-                        await self.receipt_outbox.enqueue(
-                            event, parse_res, source, receipts
-                        )
-                    except Exception:
-                        logger.exception("Parser receipt persistence failed")
+            provenance = (self.receipt_outbox, parse_res, source)
+        token = active_receipt.set(provenance)
+        try:
+            if await self.sender.send_parse_result(event, parse_res):
+                self.debouncer.mark_resource(umo, resource_id)
+        finally:
+            active_receipt.reset(token)
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("登录B站", alias={"blogin", "登录b站"})

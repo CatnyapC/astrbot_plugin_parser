@@ -43,13 +43,28 @@ from .exception import (
     ZeroSizeException,
 )
 from .image_stitch import ImageStitchCacheIndex
-from .receipts import is_onebot_send_ack_timeout, track_send_attempt
+from .receipts import active_receipt, push_chain_receipt
 from .render import Renderer
 from .video_slice import VideoSliceCacheIndex, record_video_slice_cache_from_group
 
 SEND_TIMEOUT_SECONDS = 300.0
 SEND_RETRY_TIMEOUT_SECONDS = 600.0
 SEND_TIMEOUT_RETRIES = 1
+
+
+def is_onebot_send_ack_timeout(exc):
+    text = str(exc)
+    return (
+        (
+            getattr(exc, "retcode", None) == 1200
+            or "retcode=1200" in text
+            or "'retcode': 1200" in text
+        )
+        and "Timeout" in text
+        and "NTEvent" in text
+        and "sendMsg" in text
+        and "onMsgInfoListUpdate" in text
+    )
 
 
 class _VideoWithThumbnail(Video):
@@ -128,6 +143,7 @@ class MessageSender:
     async def _send_chain(
         self, event: AstrMessageEvent, chain: list[BaseMessageComponent]
     ):
+        await push_chain_receipt(chain)
         max_attempts = 1 + self._send_timeout_retries()
         seg_meta = self._collect_seg_meta(chain)
 
@@ -138,7 +154,6 @@ class MessageSender:
                 else self._send_retry_timeout_seconds()
             )
             message = event.chain_result(chain)
-            receipt_attempt = track_send_attempt(event, message)
             try:
                 await asyncio.wait_for(
                     event.send(message),
@@ -146,8 +161,7 @@ class MessageSender:
                 )
                 return
             except asyncio.TimeoutError as exc:
-                if receipt_attempt is not None:
-                    await receipt_attempt.mark_pending("send_timeout")
+                if active_receipt.get() is not None:
                     raise TimeoutError("parser send confirmation timeout") from exc
                 if attempt < max_attempts:
                     logger.warning(
@@ -159,11 +173,6 @@ class MessageSender:
                 raise TimeoutError(
                     f"send timeout after {timeout_seconds}s (attempt {attempt}/{max_attempts})"
                 ) from exc
-
-            except Exception as exc:
-                if receipt_attempt is not None and is_onebot_send_ack_timeout(exc):
-                    await receipt_attempt.mark_pending("onebot_ack_timeout")
-                raise
 
     @staticmethod
     def _iter_contents(result: ParseResult):
