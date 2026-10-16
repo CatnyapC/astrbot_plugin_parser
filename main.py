@@ -391,7 +391,7 @@ class ParserPlugin(Star):
                 "user_id": str(user_id),
                 "raw_id": _event_raw_id(event),
                 "ts": int(raw["time"]),
-                "link": link,
+                "link": text if isinstance(seg1, Json) else link,
                 "platform_id": event.get_platform_id(),
                 "bot_id": event.get_self_id(),
             }
