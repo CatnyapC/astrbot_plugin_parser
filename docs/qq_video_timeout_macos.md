@@ -58,3 +58,13 @@ Then restart AstrBot and QQ/NapCat.
 4. If still failing, try manual QQ send of that exact MP4 from `~/Downloads`.
 
 If manual send also fails, issue is QQ/NapCat build specific, not parser merge logic.
+
+## Missing video previews
+
+Parser sends downloaded video covers through OneBot `thumb` as base64, including
+inside forwarded messages. This avoids relying on NapCat to decode the video to
+generate a preview. A missing or failed cover still allows the video to send.
+
+New YouTube downloads prefer H.264 video with AAC audio, up to 720p. If unavailable,
+the previous format selection remains the fallback. Existing cached videos are
+reused without transcoding. Reload the parser plugin after updating its code.

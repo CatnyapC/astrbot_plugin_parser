@@ -51,6 +51,17 @@ SEND_RETRY_TIMEOUT_SECONDS = 600.0
 SEND_TIMEOUT_RETRIES = 1
 
 
+class _VideoWithThumbnail(Video):
+    # AstrBot drops cover in to_dict(); forward nodes use toDict() instead.
+    thumb: str | None = None
+
+    async def to_dict(self) -> dict:
+        payload = await super().to_dict()
+        if self.thumb:
+            payload["data"]["thumb"] = self.thumb
+        return payload
+
+
 class MessageSender:
     """
     消息发送器
@@ -491,8 +502,19 @@ class MessageSender:
 
             match cont:
                 case VideoContent() | DynamicContent():
-                    component = Image if self._is_gif_file(path) else Video
-                    segs.append(component(self._to_file_uri(path)))
+                    if self._is_gif_file(path):
+                        segs.append(Image(self._to_file_uri(path)))
+                        continue
+                    video = _VideoWithThumbnail(self._to_file_uri(path))
+                    if isinstance(cont, VideoContent):
+                        try:
+                            if cover_path := await cont.get_cover_path():
+                                video.cover = self._to_file_uri(cover_path)
+                                thumbnail = await Image(video.cover).convert_to_base64()
+                                video.thumb = f"base64://{thumbnail}"
+                        except Exception as exc:
+                            logger.warning(f"parser video thumbnail unavailable: {exc}")
+                    segs.append(video)
                 case AudioContent():
                     segs.append(
                         File(name=path.name, file=self._to_file_uri(path))

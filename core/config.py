@@ -196,6 +196,8 @@ class ParserConfig(ConfigNodeContainer):
 
 
 class PluginConfig(ConfigNode):
+    receipt_url: str | None
+    receipt_token: str | None
     whitelist: str
 
     arbiter: bool

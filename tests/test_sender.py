@@ -1,8 +1,12 @@
 import asyncio
+import base64
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from astrbot.core.message import components
 from astrbot.core.message.components import Image, Nodes, Plain, Video
 from astrbot.core.message.message_event_result import MessageChain
 
@@ -17,7 +21,11 @@ from core.data import (
     VideoContent,
 )
 from core.debounce import Debouncer
-from core.exception import AuthCookieException, DurationLimitException
+from core.exception import (
+    AuthCookieException,
+    DownloadException,
+    DurationLimitException,
+)
 from core.sender import MessageSender
 
 
@@ -384,6 +392,96 @@ def test_build_segments_reports_auth_cookie_error_even_without_fail_tip():
     assert len(segs) == 1
     assert isinstance(segs[0], Plain)
     assert "YouTube 需要更新登录 cookies" in segs[0].text
+
+
+@pytest.mark.parametrize("forwarded", [False, True])
+@pytest.mark.parametrize("cover_as_task", [False, True])
+def test_video_thumbnail_survives_onebot_serialization(
+    tmp_path, monkeypatch, forwarded, cover_as_task
+):
+    from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+        AiocqhttpMessageEvent,
+    )
+
+    monkeypatch.setattr(components, "astrbot_config", {})
+    sender = build_sender()
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"video")
+    cover_path = tmp_path / "cover.png"
+    cover_bytes = bytes.fromhex(
+        "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753"
+        "de0000000c49444154789c63f8ffff3f0005fe02fea757a90000000049454e44ae426082"
+    )
+    cover_path.write_bytes(cover_bytes)
+
+    async def build():
+        async def downloaded_cover():
+            return cover_path
+
+        cover = asyncio.create_task(downloaded_cover()) if cover_as_task else cover_path
+        segs = await sender._build_segments(
+            object(),
+            {
+                "render_card": False,
+                "force_merge": False,
+                "light": [],
+                "heavy": [VideoContent(video_path, cover=cover)],
+            },
+        )
+        assert isinstance(segs[0], Video)
+        assert segs[0].cover == sender._to_file_uri(cover_path)
+        if forwarded:
+            nodes = sender._merge_segments_if_needed(DummyEvent(), segs, True)
+            payload = await nodes[0].nodes[0].to_dict()
+            return payload["data"]["content"][0]
+        return await AiocqhttpMessageEvent._from_segment_to_dict(segs[0])
+
+    payload = asyncio.run(build())
+    assert payload["type"] == "video"
+    assert payload["data"]["file"] == sender._to_file_uri(video_path)
+    assert (
+        base64.b64decode(payload["data"]["thumb"].removeprefix("base64://"))
+        == cover_bytes
+    )
+
+
+@pytest.mark.parametrize("cover_state", ["absent", "missing_file", "download_failed"])
+def test_video_still_sends_when_thumbnail_unavailable(
+    tmp_path, monkeypatch, cover_state
+):
+    from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+        AiocqhttpMessageEvent,
+    )
+
+    monkeypatch.setattr(components, "astrbot_config", {})
+    sender = build_sender()
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"video")
+
+    async def build():
+        async def failed_cover():
+            raise DownloadException("cover download failed")
+
+        cover = None
+        if cover_state == "missing_file":
+            cover = tmp_path / "missing.jpg"
+        elif cover_state == "download_failed":
+            cover = asyncio.create_task(failed_cover())
+        segs = await sender._build_segments(
+            object(),
+            {
+                "render_card": False,
+                "force_merge": False,
+                "light": [],
+                "heavy": [VideoContent(video_path, cover=cover)],
+            },
+        )
+        return await AiocqhttpMessageEvent._from_segment_to_dict(segs[0])
+
+    assert asyncio.run(build()) == {
+        "type": "video",
+        "data": {"file": sender._to_file_uri(video_path)},
+    }
 
 
 def test_build_segments_reports_video_duration_limit():

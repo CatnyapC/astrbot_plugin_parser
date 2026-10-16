@@ -58,7 +58,11 @@ class YouTubeParser(BaseParser):
                 cookiefile=self.cookiejar.cookie_file,
                 headers=self.headers,
                 proxy=self.proxy,
-                format="best[height<=720]/bestvideo[height<=720]+bestaudio/best",
+                format=(
+                    "bestvideo[height<=720][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
+                    "best[height<=720][vcodec^=avc1][acodec^=mp4a]/"
+                    "best[height<=720]/bestvideo[height<=720]+bestaudio/best"
+                ),
                 node=True,
             )
             contents.append(
@@ -72,6 +76,8 @@ class YouTubeParser(BaseParser):
             contents.extend(self.create_image_contents([video_info.thumbnail]))
 
         return self.result(
+            url=url,
+            text=video_info.description or None,
             title=video_info.title,
             author=author,
             contents=contents,
@@ -108,6 +114,8 @@ class YouTubeParser(BaseParser):
             )
 
         return self.result(
+            url=url,
+            text=video_info.description or None,
             title=video_info.title,
             author=author,
             contents=contents,
