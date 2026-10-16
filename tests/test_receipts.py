@@ -80,11 +80,20 @@ class Session:
 
 
 @pytest.mark.asyncio
-async def test_parse_entry_captures_only_current_partial_success(monkeypatch):
+@pytest.mark.parametrize(
+    "card_url",
+    [
+        None,
+        "https://www.xiaohongshu.com/discovery/item/note?xsec_token=a%2Fb%3D&share_channel=qq",
+        "https://www.bilibili.com/video/BVtest?p=2&share_source=qq#reply",
+        "https://b23.tv/BVtest?share_source=qq",
+    ],
+)
+async def test_parse_entry_captures_only_current_partial_success(monkeypatch, card_url):
     import re
     from collections import defaultdict
 
-    from astrbot.core.message.components import Plain
+    from astrbot.core.message.components import Json, Plain
     from data.plugins.astrbot_plugin_parser import main
 
     class Event:
@@ -117,6 +126,11 @@ async def test_parse_entry_captures_only_current_partial_success(monkeypatch):
             return False
 
         def get_messages(self):
+            if card_url:
+                card = {"meta": {"detail_1": {"qqdocurl": card_url}}}
+                return [
+                    Json(data=json.dumps(card) if "xiaohongshu" in card_url else card)
+                ]
             return [Plain(self.message_str)]
 
     monkeypatch.setattr(main, "AiocqhttpMessageEvent", Event)
@@ -140,8 +154,14 @@ async def test_parse_entry_captures_only_current_partial_success(monkeypatch):
         received.append(args)
 
     plugin.cfg = SimpleNamespace(should_apply_whitelist=lambda _: False)
-    plugin.key_pattern_list = [("BV", re.compile("BVtest"))]
-    plugin.parser_map = {"BV": SimpleNamespace(parse=parse, platform=parsed.platform)}
+    keyword = "http" if card_url else "BV"
+    pattern = (
+        "discovery/item/[^ ]+" if card_url and "xiaohongshu" in card_url else "BVtest"
+    )
+    plugin.key_pattern_list = [(keyword, re.compile(pattern))]
+    plugin.parser_map = {
+        keyword: SimpleNamespace(parse=parse, platform=parsed.platform)
+    }
     plugin.arbiter = SimpleNamespace(compete=compete)
     plugin.debouncer = SimpleNamespace(
         hit_link=lambda *a: False, check_resource=lambda *a: False
@@ -149,7 +169,7 @@ async def test_parse_entry_captures_only_current_partial_success(monkeypatch):
     plugin.sender = SimpleNamespace(send_parse_result=send)
     plugin.receipt_outbox = SimpleNamespace(enabled=True, enqueue=enqueue)
     await plugin.on_message(Event())
-    assert received[0][2]["link"] == "BVtest"
+    assert received[0][2]["link"] == (card_url or "BVtest")
     assert received[0][2]["user_id"] == "200"
     assert received[0][3][0].raw_ids == ("new",)
     assert len(received[0][3]) == 1
@@ -205,7 +225,9 @@ async def test_outbox_survives_failure_and_restart_without_media_download(
     outbox.start = lambda: None
     event = SimpleNamespace(get_self_id=lambda: "300")
     ack = SimpleNamespace(raw_ids=("500", "501"))
-    await outbox.enqueue(event, result(), source(), [ack])
+    original_source = source()
+    original_source["link"] = "https://www.bilibili.com/video/BVtest?p=2&share_source=qq"
+    await outbox.enqueue(event, result(), original_source, [ack])
     path = next(outbox.root.glob("*.json"))
     fetched = []
 
@@ -219,6 +241,7 @@ async def test_outbox_survives_failure_and_restart_without_media_download(
     saved = json.loads(path.read_text())
     assert len(saved["deliveries"]) == 1
     assert saved["source"]["user_id"] == "200"
+    assert saved["source"]["link"] == original_source["link"]
     assert saved["content"]["ai_summary"] == "视频讨论了城市交通"
     assert "raw_ids" not in saved
     restarted = receipts.ReceiptOutbox(config, None)
@@ -227,6 +250,7 @@ async def test_outbox_survives_failure_and_restart_without_media_download(
     assert not path.exists()
     assert fetched == ["500", "501"]
     assert session.calls[0][1]["allow_redirects"] is False
+    assert session.calls[0][1]["json"]["source"]["link"] == original_source["link"]
 
 
 @pytest.mark.asyncio
