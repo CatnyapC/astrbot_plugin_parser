@@ -21,7 +21,7 @@ from .core.download import Downloader
 from .core.exception import AuthCookieException
 from .core.image_stitch import ImageStitchCacheIndex, ImageStitchCommandService
 from .core.parsers import BaseParser, BilibiliParser
-from .core.receipts import ReceiptOutbox
+from .core.receipts import ReceiptOutbox, capture_sends
 from .core.render import Renderer
 from .core.sender import MessageSender
 from .core.utils import extract_json_url
@@ -311,7 +311,9 @@ class ParserPlugin(Star):
         if not text:
             return
         command_text = text.strip().lstrip("/")
-        if command_text.startswith("parserclip ") or command_text.startswith("parserimg "):
+        if command_text.startswith("parserclip ") or command_text.startswith(
+            "parserimg "
+        ):
             return
 
         self_id = event.get_self_id()
@@ -376,36 +378,39 @@ class ParserPlugin(Star):
             logger.warning(f"[资源防抖] 资源 {resource_id} 在防抖时间内，跳过发送")
             return
 
-        # 发送
+        # Capture one invocation's source and exact message-chain ACK hooks.
+        source = None
+        if (
+            self.receipt_outbox.enabled
+            and isinstance(event, AiocqhttpMessageEvent)
+            and group_id
+        ):
+            raw = event.message_obj.raw_message
+            source = {
+                "group_id": str(group_id),
+                "user_id": str(user_id),
+                "raw_id": _event_raw_id(event),
+                "ts": int(raw["time"]),
+                "link": link,
+                "platform_id": event.get_platform_id(),
+                "bot_id": event.get_self_id(),
+            }
         before = len(event.get_extra("_sent_message_receipts", []) or [])
-        try:
-            if await self.sender.send_parse_result(event, parse_res):
-                self.debouncer.mark_resource(umo, resource_id)
-        finally:
-            if (
-                self.receipt_outbox.enabled
-                and isinstance(event, AiocqhttpMessageEvent)
-                and group_id
-            ):
-                raw = event.message_obj.raw_message
-                source = {
-                    "group_id": str(group_id),
-                    "user_id": str(user_id),
-                    "raw_id": _event_raw_id(event),
-                    "ts": int(raw["time"]),
-                    "link": link,
-                    "platform_id": event.get_platform_id(),
-                    "bot_id": event.get_self_id(),
-                }
-                receipts = list(event.get_extra("_sent_message_receipts", []) or [])[
-                    before:
-                ]
-                try:
-                    await self.receipt_outbox.enqueue(
-                        event, parse_res, source, receipts
-                    )
-                except Exception:
-                    logger.exception("Parser receipt persistence failed")
+        with capture_sends(self.receipt_outbox, event, parse_res, source):
+            try:
+                if await self.sender.send_parse_result(event, parse_res):
+                    self.debouncer.mark_resource(umo, resource_id)
+            finally:
+                if source is not None:
+                    receipts = list(
+                        event.get_extra("_sent_message_receipts", []) or []
+                    )[before:]
+                    try:
+                        await self.receipt_outbox.enqueue(
+                            event, parse_res, source, receipts
+                        )
+                    except Exception:
+                        logger.exception("Parser receipt persistence failed")
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("登录B站", alias={"blogin", "登录b站"})

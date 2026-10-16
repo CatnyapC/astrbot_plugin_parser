@@ -43,6 +43,7 @@ from .exception import (
     ZeroSizeException,
 )
 from .image_stitch import ImageStitchCacheIndex
+from .receipts import is_onebot_send_ack_timeout, track_send_attempt
 from .render import Renderer
 from .video_slice import VideoSliceCacheIndex, record_video_slice_cache_from_group
 
@@ -124,7 +125,9 @@ class MessageSender:
     def _send_timeout_retries() -> int:
         return SEND_TIMEOUT_RETRIES
 
-    async def _send_chain(self, event: AstrMessageEvent, chain: list[BaseMessageComponent]):
+    async def _send_chain(
+        self, event: AstrMessageEvent, chain: list[BaseMessageComponent]
+    ):
         max_attempts = 1 + self._send_timeout_retries()
         seg_meta = self._collect_seg_meta(chain)
 
@@ -134,13 +137,18 @@ class MessageSender:
                 if attempt == 1
                 else self._send_retry_timeout_seconds()
             )
+            message = event.chain_result(chain)
+            receipt_attempt = track_send_attempt(event, message)
             try:
                 await asyncio.wait_for(
-                    event.send(event.chain_result(chain)),
+                    event.send(message),
                     timeout=timeout_seconds,
                 )
                 return
             except asyncio.TimeoutError as exc:
+                if receipt_attempt is not None:
+                    await receipt_attempt.mark_pending("send_timeout")
+                    raise TimeoutError("parser send confirmation timeout") from exc
                 if attempt < max_attempts:
                     logger.warning(
                         "发送解析结果超时，准备重试: "
@@ -151,6 +159,11 @@ class MessageSender:
                 raise TimeoutError(
                     f"send timeout after {timeout_seconds}s (attempt {attempt}/{max_attempts})"
                 ) from exc
+
+            except Exception as exc:
+                if receipt_attempt is not None and is_onebot_send_ack_timeout(exc):
+                    await receipt_attempt.mark_pending("onebot_ack_timeout")
+                raise
 
     @staticmethod
     def _iter_contents(result: ParseResult):
@@ -284,7 +297,9 @@ class MessageSender:
         try:
             return await asyncio.to_thread(_rewrite)
         except Exception as exc:
-            logger.warning(f"parser normalize image for retry failed: path={src} err={exc}")
+            logger.warning(
+                f"parser normalize image for retry failed: path={src} err={exc}"
+            )
             return None
 
     async def _perturb_image_for_retry(self, path: Path) -> Path | None:
@@ -343,7 +358,9 @@ class MessageSender:
         try:
             return await asyncio.to_thread(_rewrite)
         except Exception as exc:
-            logger.warning(f"parser perturb image for retry failed: path={src} err={exc}")
+            logger.warning(
+                f"parser perturb image for retry failed: path={src} err={exc}"
+            )
             return None
 
     async def _normalize_image_segments_for_retry(
@@ -600,23 +617,14 @@ class MessageSender:
         await self._send_preview_card(event, result, plan)
 
         segs = await self._build_segments(result, plan)
-        reply_raw_id = str((getattr(result, "extra", {}) or {}).get("reply_raw_id") or "").strip()
+        reply_raw_id = str(
+            (getattr(result, "extra", {}) or {}).get("reply_raw_id") or ""
+        ).strip()
         segs = self._merge_segments_if_needed(event, segs, plan["force_merge"])
         if segs and reply_raw_id:
             segs.insert(0, Reply(id=reply_raw_id))
         if not segs:
             return False
-
-        def is_onebot_send_ack_timeout(exc: Exception) -> bool:
-            text = str(exc)
-            retcode = getattr(exc, "retcode", None)
-            return (
-                (retcode == 1200 or "retcode=1200" in text or "'retcode': 1200" in text)
-                and "Timeout" in text
-                and "NTEvent" in text
-                and "sendMsg" in text
-                and "onMsgInfoListUpdate" in text
-            )
 
         try:
             await self._send_chain(event, segs)
@@ -703,12 +711,18 @@ class MessageSender:
             logger.error(f"发送解析结果失败： error={e}, segments={seg_meta}")
             return False
 
-    async def _record_video_slice_cache(self, event: AstrMessageEvent, group: SendGroup) -> None:
+    async def _record_video_slice_cache(
+        self, event: AstrMessageEvent, group: SendGroup
+    ) -> None:
         if self.video_slice_cache is None:
             return
-        await record_video_slice_cache_from_group(self.video_slice_cache, event=event, group=group)
+        await record_video_slice_cache_from_group(
+            self.video_slice_cache, event=event, group=group
+        )
 
-    async def _record_image_stitch_cache(self, event: AstrMessageEvent, group: SendGroup) -> None:
+    async def _record_image_stitch_cache(
+        self, event: AstrMessageEvent, group: SendGroup
+    ) -> None:
         if self.image_stitch_cache is None:
             return
         group_id = event.get_group_id()

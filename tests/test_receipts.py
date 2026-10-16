@@ -173,6 +173,9 @@ async def test_restart_resolves_adapter_before_new_group_messages(
         )
     )
     outbox = receipts.ReceiptOutbox(config, context)
+    outbox.events[outbox._event_key({**source(), "platform_id": "another-client"})] = (
+        SimpleNamespace(bot=object(), get_self_id=lambda: "300")
+    )
     receipts.atomic_json(
         outbox.root / "pending.json", {"source": source(), "raw_ids": ["77"]}
     )
@@ -313,3 +316,301 @@ async def test_youtube_and_tiktok_preserve_already_fetched_description(monkeypat
             parsed = await parser._parse(re.search(pattern, url))
         assert parsed.text == "Existing description"
         assert parsed.url == url
+
+
+class AckTimeout(Exception):
+    retcode = 1200
+
+    def __str__(self):
+        return (
+            "Timeout: NTEvent NodeIKernelMsgService/sendMsg "
+            "NodeIKernelMsgListener/onMsgInfoListUpdate"
+        )
+
+
+async def pending_attempt(tmp_path, *, deadline=False, partial=False):
+    import asyncio
+
+    from astrbot.core.message.components import Plain, Video
+    from astrbot.core.message.message_event_result import MessageChain
+    from data.plugins.astrbot_plugin_parser.core.sender import MessageSender
+
+    outbox = receipts.ReceiptOutbox(
+        SimpleNamespace(
+            data_dir=tmp_path,
+            receipt_url="https://receiver.invalid/api/parser/receipts",
+            receipt_token="test-secret",
+        ),
+        None,
+    )
+    outbox.start = lambda: None
+
+    class Event:
+        def __init__(self):
+            self.sent = []
+
+        def chain_result(self, chain):
+            return MessageChain(chain)
+
+        def get_self_id(self):
+            return "300"
+
+        async def send(self, message):
+            self.sent.append(message)
+            if partial:
+                message.record_sent(["already-acked"], [Plain("prefix")])
+            if deadline:
+                raise asyncio.TimeoutError()
+            raise AckTimeout()
+
+    event = Event()
+    sender = MessageSender(SimpleNamespace(), SimpleNamespace())
+    sender._build_send_plan = lambda *a, **k: {
+        "preview_card": False,
+        "force_merge": False,
+    }
+
+    async def segments(*args):
+        return [Video("file:////private/local-video.mp4")]
+
+    async def no_retry(*args):
+        raise AssertionError("ACK timeout must never retry or reencode media")
+
+    sender._build_segments = segments
+    sender._normalize_image_segments_for_retry = no_retry
+    with receipts.capture_sends(outbox, event, result(), source()):
+        await sender._send_group(
+            event,
+            result(),
+            SimpleNamespace(contents=[], force_merge=None, render_card=None),
+        )
+    return outbox, event, event.sent[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deadline", [False, True])
+async def test_ack_timeout_persists_without_resending_and_survives_restart(
+    tmp_path, monkeypatch, deadline
+):
+    import asyncio
+
+    outbox, event, chain = await pending_attempt(tmp_path, deadline=deadline)
+    assert len(event.sent) == 1
+    path = next(outbox.root.glob("*.json"))
+    payload = json.loads(path.read_text())
+    assert payload["state"] == "awaiting_confirmation"
+    assert payload["source"] == source()
+    assert payload["content"]["title"] == "标题"
+    assert payload["receipt_id"] == payload["send_attempt"]["id"] == path.stem
+    assert "raw_ids" not in payload
+    assert "private/local-video" not in path.read_text()
+    assert path.stat().st_mode & 0o777 == 0o600
+    session = Session()
+    await outbox.deliver(path, session, event)
+    assert session.calls == []
+
+    def no_adapter(*args):
+        raise AssertionError("unconfirmed attempts must not query any platform/history")
+
+    restarted = receipts.ReceiptOutbox(
+        outbox.config, SimpleNamespace(get_platform_inst=no_adapter)
+    )
+    observed = asyncio.Event()
+    monkeypatch.setattr(restarted, "_log_awaiting", lambda payload: observed.set())
+    restarted.start()
+    try:
+        await asyncio.wait_for(observed.wait(), 1)
+    finally:
+        await restarted.close()
+    assert json.loads(path.read_text()) == payload
+
+
+@pytest.mark.asyncio
+async def test_normal_ack_still_uses_existing_enqueue_and_delivery(
+    tmp_path, monkeypatch
+):
+    from astrbot.core.message.components import Plain
+    from astrbot.core.message.message_event_result import MessageChain
+    from data.plugins.astrbot_plugin_parser.core.sender import MessageSender
+
+    outbox = receipts.ReceiptOutbox(
+        SimpleNamespace(
+            data_dir=tmp_path,
+            receipt_url="https://receiver.invalid",
+            receipt_token="secret",
+        ),
+        None,
+    )
+    outbox.start = lambda: None
+    sent = []
+
+    class Event:
+        def chain_result(self, chain):
+            return MessageChain(chain)
+
+        def get_self_id(self):
+            return "300"
+
+        async def send(self, message):
+            sent.append(message)
+            message.record_sent(["77"], message.chain)
+
+    event = Event()
+    with receipts.capture_sends(outbox, event, result(), source()):
+        await MessageSender(SimpleNamespace(), SimpleNamespace())._send_chain(
+            event, [Plain("ok")]
+        )
+    assert not list(outbox.root.glob("*.json"))
+    await outbox.enqueue(event, result(), source(), sent[0].sent_receipts)
+    path = next(outbox.root.glob("*.json"))
+    assert json.loads(path.read_text())["raw_ids"] == ["77"]
+
+    async def metadata(event, raw_id):
+        return {"group_id": 100, "user_id": 300, "real_seq": 900, "time": 101}, ""
+
+    monkeypatch.setattr(receipts, "_onebot_reply_message", metadata)
+    session = Session()
+    await outbox.deliver(path, session, event)
+    assert session.calls[0][1]["json"]["deliveries"][0]["fingerprint"] == "100:300:900"
+    assert not path.exists()
+
+
+@pytest.mark.asyncio
+async def test_bound_confirmation_deduplicates_preserves_uuid_and_retries_json_only(
+    tmp_path, monkeypatch
+):
+    outbox, event, message = await pending_attempt(tmp_path)
+    path = next(outbox.root.glob("*.json"))
+    receipt_id = path.stem
+    message.record_sent(["77"], message.chain)
+    message.record_sent(["77"], message.chain)
+    await outbox.drain_confirmations()
+    assert len(list(outbox.root.glob("*.json"))) == 1
+    assert json.loads(path.read_text())["raw_ids"] == ["77"]
+
+    queries = []
+
+    async def metadata(event, raw_id):
+        queries.append(raw_id)
+        return {"group_id": 100, "user_id": 300, "real_seq": 900, "time": 101}, ""
+
+    monkeypatch.setattr(receipts, "_onebot_reply_message", metadata)
+    with pytest.raises(OSError):
+        await outbox.deliver(path, Session(fail=True), event)
+    payload = json.loads(path.read_text())
+    assert payload["receipt_id"] == receipt_id
+    assert payload["deliveries"][0] == {
+        "raw_id": "77",
+        "group_id": "100",
+        "user_id": "300",
+        "ts": 101,
+        "fingerprint": "100:300:900",
+    }
+    message.record_sent(["77"], message.chain)
+    await outbox.drain_confirmations()
+    session = Session()
+    await outbox.deliver(path, session, event)
+    wire = session.calls[0][1]["json"]
+    assert set(wire) == {"receipt_id", "source", "content", "deliveries"}
+    assert wire["receipt_id"] == receipt_id
+    assert queries == ["77"]
+    assert not path.exists()
+    message.record_sent(["77"], message.chain)
+    await outbox.drain_confirmations()
+    assert list(outbox.root.glob("*.json")) == []
+    assert len(event.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_unrelated_and_ambiguous_confirmation_cannot_release_pending(
+    tmp_path, monkeypatch
+):
+    from astrbot.core.message.components import Plain
+    from astrbot.core.message.message_event_result import MessageChain
+
+    outbox, event, message = await pending_attempt(tmp_path)
+    path = next(outbox.root.glob("*.json"))
+    original = path.read_bytes()
+    unrelated = MessageChain([Plain("same title, size, and nearby time are not proof")])
+    unrelated.record_sent(["77"], unrelated.chain)
+    message.record_sent(["77", "78"], message.chain)
+    await outbox.drain_confirmations()
+    assert path.read_bytes() == original
+    session = Session()
+    await outbox.deliver(path, session, event)
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrong", ["group_id", "user_id", "real_seq", "time"])
+async def test_bound_ack_requires_verified_native_identity_before_http(
+    tmp_path, monkeypatch, wrong
+):
+    outbox, event, message = await pending_attempt(tmp_path)
+    path = next(outbox.root.glob("*.json"))
+    message.record_sent(["77"], message.chain)
+    await outbox.drain_confirmations()
+
+    async def metadata(event, raw_id):
+        raw = {"group_id": 100, "user_id": 300, "real_seq": 900, "time": 101}
+        raw[wrong] = 0
+        return raw, ""
+
+    monkeypatch.setattr(receipts, "_onebot_reply_message", metadata)
+    session = Session()
+    with pytest.raises(receipts.ReceiptMetadataError):
+        await outbox.deliver(path, session, event)
+    assert path.exists()
+    assert session.calls == []
+
+
+@pytest.mark.asyncio
+async def test_pre_timeout_partial_ack_not_reused_as_late_confirmation(tmp_path):
+    outbox, event, message = await pending_attempt(tmp_path, partial=True)
+    path = next(outbox.root.glob("*.json"))
+    message.record_sent(["already-acked"], message.chain)
+    await outbox.drain_confirmations()
+    assert json.loads(path.read_text())["state"] == "awaiting_confirmation"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,body", [(401, {}), (503, {}), (200, {"status": "pending"})]
+)
+async def test_http_rejection_keeps_confirmed_pending_file(tmp_path, status, body):
+    outbox, event, message = await pending_attempt(tmp_path)
+    path = next(outbox.root.glob("*.json"))
+    payload = json.loads(path.read_text())
+    payload["state"] = "acknowledged"
+    payload["deliveries"] = [
+        {
+            "raw_id": "77",
+            "group_id": "100",
+            "user_id": "300",
+            "ts": 101,
+            "fingerprint": "100:300:900",
+        }
+    ]
+    receipts.atomic_json(path, payload)
+
+    class Rejected(Response):
+        async def json(self):
+            return body
+
+    response = Rejected()
+    response.status = status
+    session = SimpleNamespace(post=lambda *a, **k: response)
+    with pytest.raises(receipts.ReceiptDeliveryError):
+        await outbox.deliver(path, session, event)
+    assert path.exists()
+
+
+@pytest.mark.asyncio
+async def test_pending_persistence_failure_never_retries_media(tmp_path, monkeypatch):
+    def fail_write(*args):
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(receipts, "atomic_json", fail_write)
+    outbox, event, message = await pending_attempt(tmp_path)
+    assert len(event.sent) == 1
+    assert not list(outbox.root.glob("*.json"))
